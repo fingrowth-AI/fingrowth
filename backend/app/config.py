@@ -33,9 +33,8 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
-    # LLM providers
+    # LLM provider
     openai_api_key: str = ""
-    anthropic_api_key: str = ""
 
     # Data sources
     alpha_vantage_api_key: str = ""
