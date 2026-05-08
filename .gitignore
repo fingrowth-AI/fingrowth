@@ -1,0 +1,20 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.log
+.DS_Store
+.zshrc
+
+# Claude Code / Cursor assistant (local only; do not commit)
+.claude/
+**/CLAUDE.md
+CLAUDE.local.md
+**/CLAUDE.local.md
+.mcp.json
+
+# Design doc (Word → Markdown export); explicit + generic patterns
+/AI_Investment_Strategist_Design_Doc_v2.1.docx.md
+*.docx
+*.docx.md
