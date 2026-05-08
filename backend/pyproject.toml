@@ -45,3 +45,11 @@ select = ["E", "F", "I"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Integration tests live in tests/integration/ and hit real APIs. They're
+# excluded from the default suite so `pytest` stays fast and offline.
+# Run them with `pytest tests/integration/ -m integration` (or `--no-header
+# --override-ini="addopts="` to bypass).
+addopts = "--ignore=tests/integration"
+markers = [
+    "integration: live network calls against real APIs; opt-in only",
+]

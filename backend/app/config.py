@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolve env-file paths against this file's location so they work regardless
+# of where Python is invoked from (pytest in backend/, docker-compose in repo
+# root, IDE runners with arbitrary cwd).
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_REPO_ROOT = _BACKEND_DIR.parent
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Tuple is processed in increasing-precedence order: root .env loads
+        # first, backend/.env (if present) overrides for backend-only tweaks.
+        env_file=(_REPO_ROOT / ".env", _BACKEND_DIR / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
