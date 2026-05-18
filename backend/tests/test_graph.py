@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.agents.graph import (
     AgentState,
     agent_graph,
@@ -9,6 +11,22 @@ from app.agents.graph import (
     compile_graph,
     render_graph_mermaid,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_researcher_tools(monkeypatch):
+    """Keep routing tests offline — the P3-02 researcher node does real I/O.
+
+    These tests assert routing/topology only, so the data tools are stubbed to
+    return nothing. Researcher behaviour itself is covered by test_researcher.
+    """
+
+    async def _empty(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.agents.researcher.get_company_filings", _empty)
+    monkeypatch.setattr("app.agents.researcher.get_daily_prices", _empty)
+    monkeypatch.setattr("app.agents.researcher.get_company_news", _empty)
 
 
 def _run(analysis_type: str | None) -> AgentState:
