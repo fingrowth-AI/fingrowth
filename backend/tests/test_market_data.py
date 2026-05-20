@@ -16,6 +16,7 @@ from datetime import date, timedelta
 import httpx
 import pytest
 
+import app.tools.market_data as market_data
 from app.config import settings
 from app.models.market import CompanyOverview, PriceBar
 from app.tools.market_data import (
@@ -35,8 +36,9 @@ from app.tools.market_data import (
 @pytest.fixture(autouse=True)
 def _api_key_and_cache(monkeypatch):
     """Every test starts with a fresh cache and a stubbed API key."""
-    _clear_cache()
     monkeypatch.setattr(settings, "alpha_vantage_api_key", "test-key")
+    monkeypatch.setattr(market_data, "DEFAULT_MIN_REQUEST_INTERVAL_SECONDS", 0.0)
+    _clear_cache()
     yield
     _clear_cache()
 
@@ -236,6 +238,41 @@ async def test_rate_limit_note_message_raises():
     async with _make_client(handler) as client:
         with pytest.raises(RateLimitError):
             await get_daily_prices("MSFT", 30, client=client)
+
+
+@pytest.mark.asyncio
+async def test_cache_misses_are_paced_to_avoid_burst_throttle(monkeypatch):
+    """Distinct live requests are serialized with a minimum start interval."""
+    now = 100.0
+    sleeps: list[float] = []
+    calls = 0
+
+    def fake_monotonic() -> float:
+        return now
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = {**_overview_payload(), "Symbol": req.url.params["symbol"]}
+        return httpx.Response(200, json=payload)
+
+    monkeypatch.setattr(market_data, "DEFAULT_MIN_REQUEST_INTERVAL_SECONDS", 1.1)
+    monkeypatch.setattr(market_data, "_monotonic", fake_monotonic)
+    monkeypatch.setattr(market_data, "_rate_limit_sleep", fake_sleep)
+    _clear_cache()
+
+    async with _make_client(handler) as client:
+        await get_company_overview("MSFT", client=client)
+        await get_company_overview("AAPL", client=client)
+
+    assert calls == 2
+    assert len(sleeps) == 1
+    assert sleeps[0] == pytest.approx(1.1)
 
 
 # ---------------------------------------------------------------------------

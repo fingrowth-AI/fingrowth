@@ -1,9 +1,10 @@
 """Market data client (P2-02).
 
-Alpha Vantage free tier: 25 calls/day, 5/min on the free key. We sit in front
-of those endpoints with an in-memory TTL cache so repeat reads cost zero
-network requests, and we surface rate-limit responses (which AV emits as
-``Note`` / ``Information`` keys with HTTP 200) as :class:`RateLimitError`.
+Alpha Vantage free tier: 25 calls/day, with burst throttling around one request
+per second on the free key. We sit in front of those endpoints with an in-memory
+TTL cache so repeat reads cost zero network requests, pace cache misses, and
+surface rate-limit responses (which AV emits as ``Note`` / ``Information`` keys
+with HTTP 200) as :class:`RateLimitError`.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from app.models.market import CompanyOverview, PriceBar
 ALPHA_VANTAGE_BASE = "https://www.alphavantage.co/query"
 DEFAULT_TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 DEFAULT_TTL_SECONDS = 60 * 60  # 1 hour
+DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 1.1
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +52,8 @@ class MissingAPIKeyError(MarketDataError):
 
 _cache: dict[str, tuple[Any, float]] = {}
 _cache_lock = asyncio.Lock()
+_rate_limit_lock = asyncio.Lock()
+_last_request_at = 0.0
 
 
 def _cache_get(key: str) -> Any | None:
@@ -69,7 +73,17 @@ def _cache_set(key: str, value: Any, ttl: float) -> None:
 
 def _clear_cache() -> None:
     """Reset the cache. Test helper."""
+    global _last_request_at
     _cache.clear()
+    _last_request_at = 0.0
+
+
+def _monotonic() -> float:
+    return time.monotonic()
+
+
+async def _rate_limit_sleep(delay: float) -> None:
+    await asyncio.sleep(delay)
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +109,7 @@ async def _request(
     api_key = settings.alpha_vantage_api_key
     if not api_key:
         raise MissingAPIKeyError("ALPHA_VANTAGE_API_KEY is not configured")
+    await _respect_rate_limit()
     full_params = {**params, "apikey": api_key}
     resp = await client.get(ALPHA_VANTAGE_BASE, params=full_params)
     resp.raise_for_status()
@@ -104,6 +119,22 @@ async def _request(
             payload.get("Note") or payload.get("Information") or "rate limit hit"
         )
     return payload
+
+
+async def _respect_rate_limit() -> None:
+    """Serialize live Alpha Vantage cache misses to avoid free-tier burst limits."""
+    global _last_request_at
+    interval = DEFAULT_MIN_REQUEST_INTERVAL_SECONDS
+    if interval <= 0:
+        return
+
+    async with _rate_limit_lock:
+        now = _monotonic()
+        wait = (_last_request_at + interval) - now
+        if wait > 0:
+            await _rate_limit_sleep(wait)
+            now = _monotonic()
+        _last_request_at = now
 
 
 # ---------------------------------------------------------------------------
