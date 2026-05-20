@@ -1,4 +1,4 @@
-name: InvestmentStrategist
+name: FinGrowth
 
 options:
   bundleIdPrefix: com.fingrowth
@@ -23,18 +23,18 @@ settings:
     ALWAYS_SEARCH_USER_PATHS: NO
 
 targets:
-  InvestmentStrategist:
+  FinGrowth:
     type: application
     platform: iOS
     deploymentTarget: "17.0"
     sources:
-      - path: InvestmentStrategist
+      - path: FinGrowth
         excludes:
           - "**/.DS_Store"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.fingrowth.InvestmentStrategist
-        PRODUCT_NAME: InvestmentStrategist
+        PRODUCT_BUNDLE_IDENTIFIER: com.fingrowth.FinGrowth
+        PRODUCT_NAME: FinGrowth
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
         CURRENT_PROJECT_VERSION: "1"
@@ -50,7 +50,7 @@ targets:
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: YES
 
-  InvestmentStrategistTests:
+  FinGrowthTests:
     type: bundle.unit-test
     platform: iOS
     deploymentTarget: "17.0"
@@ -59,10 +59,10 @@ targets:
         excludes:
           - "**/.DS_Store"
     dependencies:
-      - target: InvestmentStrategist
+      - target: FinGrowth
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.fingrowth.InvestmentStrategistTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.fingrowth.FinGrowthTests
         GENERATE_INFOPLIST_FILE: YES
         DEVELOPMENT_TEAM: ""
         CODE_SIGN_STYLE: Manual
@@ -71,17 +71,17 @@ targets:
         CODE_SIGNING_ALLOWED: YES
 
 schemes:
-  InvestmentStrategist:
+  FinGrowth:
     build:
       targets:
-        InvestmentStrategist: all
-        InvestmentStrategistTests: [test]
+        FinGrowth: all
+        FinGrowthTests: [test]
     run:
       config: Debug
     test:
       config: Debug
       gatherCoverageData: false
       targets:
-        - InvestmentStrategistTests
+        - FinGrowthTests
     archive:
       config: Release

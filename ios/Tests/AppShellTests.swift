@@ -1,6 +1,6 @@
 import XCTest
 import SwiftData
-@testable import InvestmentStrategist
+@testable import FinGrowth
 
 final class AppShellTests: XCTestCase {
 

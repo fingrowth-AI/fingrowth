@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 
 @main
-struct InvestmentStrategistApp: App {
+struct FinGrowthApp: App {
     @State private var settings = AppSettings()
     private let container: ModelContainer
 

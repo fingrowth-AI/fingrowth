@@ -1,7 +1,7 @@
 import Foundation
 
 enum AppDataLocation {
-    static let storeFileName = "InvestmentStrategist.sqlite"
+    static let storeFileName = "FinGrowth.sqlite"
     static let secureDirectoryName = "secure"
 
     #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
