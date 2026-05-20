@@ -5,12 +5,23 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-DISCLAIMER = (
-    "This is a research tool, not investment advice. "
-    "The information provided is for educational and research purposes only. "
-    "Past performance does not guarantee future results. "
-    "Always consult a qualified financial advisor before making investment decisions."
-)
+# Re-export the canonical disclaimer + RiskReview from the risk module so the
+# API contract and the Risk Critic guardrail (P3-04) share a single source of
+# truth — they cannot drift apart even if the disclaimer text is amended.
+from app.models.risk import STANDARD_DISCLAIMER as DISCLAIMER
+from app.models.risk import RiskFlag, RiskReview
+
+__all__ = [
+    "DISCLAIMER",
+    "RiskFlag",
+    "RiskReview",
+    "PortfolioProfile",
+    "ResearchData",
+    "AnalysisData",
+    "AnalysisQuery",
+    "AnalysisResponse",
+    "HealthResponse",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -37,11 +48,6 @@ class AnalysisData(BaseModel):
     narrative: str = ""
     # "high" | "medium" | "low" | "insufficient_data"
     confidence: str = "insufficient_data"
-
-
-class RiskReview(BaseModel):
-    approved: bool = True
-    flags: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

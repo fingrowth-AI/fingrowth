@@ -9,6 +9,7 @@ from app.models.schemas import (
     AnalysisQuery,
     AnalysisResponse,
     ResearchData,
+    RiskFlag,
     RiskReview,
 )
 
@@ -37,5 +38,12 @@ async def query_analysis(body: AnalysisQuery) -> AnalysisResponse:
             ),
             confidence="insufficient_data",
         ),
-        risk_review=RiskReview(approved=True, flags=["stub_response"]),
+        risk_review=RiskReview(
+            approved=True,
+            flags=[RiskFlag(code="missing_disclaimer", detail="stub_response")],
+            modified_response=(
+                f"[STUB] Analysis for {body.ticker.upper()} "
+                f"({body.analysis_type}) is not yet implemented."
+            ),
+        ),
     )
