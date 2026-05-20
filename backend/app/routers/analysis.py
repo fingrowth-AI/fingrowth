@@ -1,49 +1,178 @@
+"""SSE streaming analysis endpoint (P3-05).
+
+Replaces the P1-04 stub. The endpoint runs the compiled LangGraph pipeline
+(Router → Researcher → Analyst → Risk Critic) and streams progress events
+via Server-Sent Events so the iOS client can render incremental UI:
+
+    event: progress      data: {"stage": "researching"}
+    event: progress      data: {"stage": "analyzing"}   # skipped on general
+    event: progress      data: {"stage": "reviewing"}
+    event: final_result  data: <AnalysisResponse JSON>
+    event: error         data: {"message": "..."}        # on pipeline failure
+
+The graph runs via ``astream`` so per-node completions drive the progress
+emission, but the agents themselves remain unchanged — they don't need to
+know they're being streamed.
+"""
+
 from __future__ import annotations
 
+import json
+import logging
 import uuid
+from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
+from app.agents.graph import agent_graph
+from app.models.risk import STANDARD_DISCLAIMER
 from app.models.schemas import (
     AnalysisData,
     AnalysisQuery,
     AnalysisResponse,
     ResearchData,
-    RiskFlag,
     RiskReview,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
+# Internal route names emitted by the Router node, mapped to the next progress
+# stage. Kept here (not imported from agents.graph) so the SSE contract is
+# explicit at the API boundary — adding a new internal route does not silently
+# change the wire-level event sequence.
+_ROUTES_WITH_ANALYST = {"fundamental_analysis", "technical_analysis"}
 
-@router.post("/query", response_model=AnalysisResponse)
-async def query_analysis(body: AnalysisQuery) -> AnalysisResponse:
-    """Stub endpoint — returns a mock AnalysisResponse.
 
-    The real implementation (P3-05) streams SSE events from the LangGraph
-    agent pipeline.  This stub satisfies P1-04 acceptance criteria so that
-    iOS integration can begin before the AI layer is wired up.
+def _sse_event(event: str, data: dict[str, Any]) -> str:
+    """Format one SSE frame. Trailing blank line is part of the protocol."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _build_response(
+    session_id: uuid.UUID,
+    ticker: str,
+    final_state: dict[str, Any],
+) -> AnalysisResponse:
+    """Project the accumulated graph state onto the public AnalysisResponse.
+
+    The graph's internal state carries full Pydantic dumps of ResearchPacket
+    and AnalysisReport; the wire model only exposes the trimmed-down fields
+    defined in section 7.2 of the design doc. We reshape rather than expose
+    the internal shape directly.
     """
-    session_id = body.session_id or uuid.uuid4()
+    research_dict = final_state.get("research") or {}
+    analysis_dict = final_state.get("analysis") or {}
+    risk_dict = final_state.get("risk_review") or {}
+
+    research = ResearchData(
+        filings=research_dict.get("filings", []),
+        news=research_dict.get("news", []),
+    )
+
+    indicators = analysis_dict.get("technical_indicators") or {}
+    analysis = AnalysisData(
+        technical=indicators,
+        narrative=analysis_dict.get("narrative", ""),
+        confidence=analysis_dict.get("confidence_level", "insufficient_data"),
+    )
+
+    risk_review = (
+        RiskReview.model_validate(risk_dict)
+        if risk_dict
+        else RiskReview(disclaimer=STANDARD_DISCLAIMER)
+    )
 
     return AnalysisResponse(
         session_id=session_id,
-        ticker=body.ticker.upper(),
-        research=ResearchData(filings=[], news=[]),
-        analysis=AnalysisData(
-            technical={},
-            narrative=(
-                f"[STUB] Analysis for {body.ticker.upper()} "
-                f"({body.analysis_type}) is not yet implemented."
-            ),
-            confidence="insufficient_data",
+        ticker=ticker,
+        research=research,
+        analysis=analysis,
+        risk_review=risk_review,
+        disclaimer=risk_review.disclaimer or STANDARD_DISCLAIMER,
+    )
+
+
+async def _run_pipeline(
+    body: AnalysisQuery,
+    session_id: uuid.UUID,
+) -> AsyncIterator[str]:
+    """Drive the LangGraph pipeline and yield SSE frames as it progresses.
+
+    ``astream`` yields ``{node_name: state_diff}`` after each node finishes.
+    We accumulate diffs into ``final_state`` and use the node name to choose
+    the next progress event. The first ``researching`` frame is emitted before
+    invoking the graph so the iOS client sees activity immediately rather than
+    only after the first network round-trip into the data tools.
+    """
+    ticker = body.ticker.upper()
+    initial_state: dict[str, Any] = {
+        "query": body.query,
+        "ticker": ticker,
+        "analysis_type": body.analysis_type,
+        "portfolio_profile": (
+            body.portfolio_profile.model_dump()
+            if body.portfolio_profile is not None
+            else None
         ),
-        risk_review=RiskReview(
-            approved=True,
-            flags=[RiskFlag(code="missing_disclaimer", detail="stub_response")],
-            modified_response=(
-                f"[STUB] Analysis for {body.ticker.upper()} "
-                f"({body.analysis_type}) is not yet implemented."
-            ),
-        ),
+        "session_id": str(session_id),
+    }
+
+    try:
+        yield _sse_event("progress", {"stage": "researching"})
+
+        final_state: dict[str, Any] = {}
+        async for update in agent_graph.astream(initial_state):
+            # ``update`` is keyed by the node that just completed.
+            for node_name, diff in update.items():
+                if not isinstance(diff, dict):
+                    continue
+                # Merge the diff into our local copy. ``path`` is the only
+                # field with a reducer (add); we skip it because we don't
+                # rely on it for the response.
+                for key, value in diff.items():
+                    if key == "path":
+                        continue
+                    final_state[key] = value
+
+                if node_name == "researcher":
+                    route = final_state.get("route", "")
+                    next_stage = (
+                        "analyzing"
+                        if route in _ROUTES_WITH_ANALYST
+                        else "reviewing"
+                    )
+                    yield _sse_event("progress", {"stage": next_stage})
+                elif node_name == "analyst":
+                    yield _sse_event("progress", {"stage": "reviewing"})
+
+        response = _build_response(session_id, ticker, final_state)
+        yield _sse_event("final_result", response.model_dump(mode="json"))
+    except Exception as exc:
+        logger.exception("analysis pipeline failed")
+        yield _sse_event("error", {"message": f"{type(exc).__name__}: {exc}"})
+
+
+@router.post("/query")
+async def query_analysis(body: AnalysisQuery) -> StreamingResponse:
+    """Stream the multi-agent pipeline's progress and final result as SSE.
+
+    A ``StreamingResponse`` is returned (rather than ``AnalysisResponse``) so
+    intermediate progress events can be emitted as the graph runs. The final
+    ``final_result`` event carries an AnalysisResponse-shaped payload, matching
+    the schema documented in section 7.2 of the design doc.
+    """
+    session_id = body.session_id or uuid.uuid4()
+    return StreamingResponse(
+        _run_pipeline(body, session_id),
+        media_type="text/event-stream",
+        headers={
+            # Disable proxy buffering so events are flushed promptly even
+            # behind reverse proxies (nginx in particular).
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )

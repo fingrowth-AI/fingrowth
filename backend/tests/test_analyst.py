@@ -184,7 +184,7 @@ def test_llm_narrator_is_called_with_indicators(monkeypatch):
     """When narrate() is monkeypatched, its return wins — i.e. the seam exists."""
     captured: dict[str, object] = {}
 
-    def fake_narrate(ticker, indicators, packet):
+    def fake_narrate(ticker, indicators, packet, portfolio_profile=None):
         captured["ticker"] = ticker
         captured["rsi"] = indicators.rsi
         return "FAKE NARRATIVE"

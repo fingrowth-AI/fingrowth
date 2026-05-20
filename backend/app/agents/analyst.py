@@ -124,10 +124,39 @@ def _assess_confidence(
     return "high"
 
 
+def _portfolio_context_sentence(
+    portfolio_profile: dict[str, Any] | None,
+) -> str | None:
+    """Render the (already-anonymized) portfolio profile as a single sentence.
+
+    Returns ``None`` when no profile was provided so callers can simply skip
+    the segment instead of emitting an empty clause. The sentence picks up the
+    three fields the design doc names — risk orientation, diversification,
+    and the largest-position label — because those are the ones the iOS
+    DifferentialPrivacy layer guarantees are coarse-grained / non-identifying.
+    """
+    if not portfolio_profile:
+        return None
+    bits: list[str] = []
+    risk = portfolio_profile.get("risk_orientation")
+    div = portfolio_profile.get("diversification")
+    largest = portfolio_profile.get("largest_position")
+    if risk:
+        bits.append(f"risk orientation '{risk}'")
+    if div:
+        bits.append(f"{div} diversification")
+    if largest:
+        bits.append(f"largest position is {largest}")
+    if not bits:
+        return None
+    return "Portfolio context: " + ", ".join(bits) + "."
+
+
 def _fallback_narrative(
     ticker: str,
     indicators: TechnicalIndicators,
     packet: ResearchPacket,
+    portfolio_profile: dict[str, Any] | None = None,
 ) -> str:
     """Deterministic template used when no LLM is configured.
 
@@ -166,6 +195,9 @@ def _fallback_narrative(
         parts.append(
             "Note: one or more data sources degraded; signals are partial."
         )
+    profile_sentence = _portfolio_context_sentence(portfolio_profile)
+    if profile_sentence:
+        parts.append(profile_sentence)
     return " ".join(parts)
 
 
@@ -173,6 +205,7 @@ def narrate(
     ticker: str,
     indicators: TechnicalIndicators,
     packet: ResearchPacket,
+    portfolio_profile: dict[str, Any] | None = None,
 ) -> str:
     """LLM narration of the indicators, with a deterministic fallback.
 
@@ -182,7 +215,7 @@ def narrate(
     pipeline because of an external dependency.
     """
     if not settings.openai_api_key:
-        return _fallback_narrative(ticker, indicators, packet)
+        return _fallback_narrative(ticker, indicators, packet, portfolio_profile)
     try:
         # Lazy import so tests / environments without langchain_openai
         # installed (or without an API key) never touch the import.
@@ -199,7 +232,10 @@ def narrate(
             f"Indicators: {indicators.model_dump_json()}\n"
             f"Recent headlines: {[n.headline for n in packet.news[:5]]}\n"
             f"Sources degraded: {packet.degraded}\n"
-            "Write the narrative."
+            f"Portfolio profile: {portfolio_profile or 'not provided'}\n"
+            "Write the narrative. If a portfolio profile is provided, briefly "
+            "tailor the language to its risk orientation and diversification "
+            "without recomputing any numbers."
         )
         result = llm.invoke(
             [
@@ -208,24 +244,29 @@ def narrate(
             ]
         )
         text = str(result.content).strip()
-        return text or _fallback_narrative(ticker, indicators, packet)
+        return text or _fallback_narrative(
+            ticker, indicators, packet, portfolio_profile
+        )
     except Exception as exc:
         logger.warning(
             "LLM narration failed, using deterministic fallback: %s", exc
         )
-        return _fallback_narrative(ticker, indicators, packet)
+        return _fallback_narrative(ticker, indicators, packet, portfolio_profile)
 
 
-def analyze(packet: ResearchPacket) -> AnalysisReport:
+def analyze(
+    packet: ResearchPacket,
+    portfolio_profile: dict[str, Any] | None = None,
+) -> AnalysisReport:
     """Produce an :class:`AnalysisReport` from a :class:`ResearchPacket`.
 
     The only side effect is the LLM call inside :func:`narrate`; everything
-    else is a deterministic function of ``packet``.
+    else is a deterministic function of ``packet`` and ``portfolio_profile``.
     """
     closes = _closes(packet)
     indicators, notes = _compute_indicators(closes)
     confidence = _assess_confidence(packet, indicators)
-    narrative = narrate(packet.ticker, indicators, packet)
+    narrative = narrate(packet.ticker, indicators, packet, portfolio_profile)
     return AnalysisReport(
         ticker=packet.ticker,
         technical_indicators=indicators,
@@ -238,6 +279,7 @@ def analyze(packet: ResearchPacket) -> AnalysisReport:
 def analyst_node(state: dict[str, Any]) -> dict[str, Any]:
     """Graph node: read ResearchPacket from state, attach AnalysisReport."""
     research = state.get("research") or {}
+    portfolio_profile = state.get("portfolio_profile")
     if not research:
         # Researcher contributed nothing — emit a clearly-degraded report
         # instead of crashing, so the Risk Critic still gets a typed input.
@@ -251,5 +293,5 @@ def analyst_node(state: dict[str, Any]) -> dict[str, Any]:
         return {"path": ["analyst"], "analysis": report.model_dump(mode="json")}
 
     packet = ResearchPacket.model_validate(research)
-    report = analyze(packet)
+    report = analyze(packet, portfolio_profile)
     return {"path": ["analyst"], "analysis": report.model_dump(mode="json")}
