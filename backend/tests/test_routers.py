@@ -1,4 +1,10 @@
-"""Tests for P1-04: Health + Router Stubs."""
+"""Tests for P1-04: Health endpoint.
+
+The analysis-stub tests that lived here originally covered the synchronous
+JSON stub that has been replaced by the SSE streaming endpoint in P3-05.
+Streaming/contract coverage now lives in ``test_analysis_streaming.py``;
+this file only retains the health check.
+"""
 
 from __future__ import annotations
 
@@ -37,81 +43,3 @@ async def test_health_db_field_present(client: AsyncClient):
     resp = await client.get("/health")
     body = resp.json()
     assert body["db"] in ("connected", "disconnected")
-
-
-# ---------------------------------------------------------------------------
-# Analysis stub
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_analysis_query_returns_mock_response(client: AsyncClient):
-    """POST /api/v1/analysis/query returns a valid AnalysisResponse."""
-    payload = {
-        "query": "Analyze AAPL earnings trends",
-        "ticker": "AAPL",
-        "analysis_type": "fundamental",
-    }
-    resp = await client.post("/api/v1/analysis/query", json=payload)
-    assert resp.status_code == 200
-    body = resp.json()
-
-    assert "session_id" in body
-    assert body["ticker"] == "AAPL"
-    assert "research" in body
-    assert "analysis" in body
-    assert "risk_review" in body
-    assert "disclaimer" in body
-    assert len(body["disclaimer"]) > 0
-
-
-@pytest.mark.asyncio
-async def test_analysis_query_optional_fields(client: AsyncClient):
-    """session_id and portfolio_profile are optional."""
-    import uuid
-
-    payload = {
-        "query": "What is the RSI for MSFT?",
-        "ticker": "MSFT",
-        "analysis_type": "technical",
-        "session_id": str(uuid.uuid4()),
-        "portfolio_profile": {
-            "sector_weights": {"technology": 0.8},
-            "risk_orientation": "growth",
-        },
-    }
-    resp = await client.post("/api/v1/analysis/query", json=payload)
-    assert resp.status_code == 200
-    assert resp.json()["ticker"] == "MSFT"
-
-
-@pytest.mark.asyncio
-async def test_analysis_query_invalid_body_returns_422(client: AsyncClient):
-    """Missing required fields → 422 Unprocessable Entity."""
-    resp = await client.post("/api/v1/analysis/query", json={})
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_analysis_query_invalid_analysis_type_returns_422(client: AsyncClient):
-    """analysis_type must be fundamental | technical | general."""
-    payload = {
-        "query": "...",
-        "ticker": "AAPL",
-        "analysis_type": "buy_signal",  # invalid
-    }
-    resp = await client.post("/api/v1/analysis/query", json=payload)
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_analysis_response_disclaimer_non_empty(client: AsyncClient):
-    """Every AnalysisResponse must include a non-empty disclaimer."""
-    payload = {
-        "query": "General market overview",
-        "ticker": "SPY",
-        "analysis_type": "general",
-    }
-    resp = await client.post("/api/v1/analysis/query", json=payload)
-    assert resp.status_code == 200
-    assert resp.json()["disclaimer"] != ""
