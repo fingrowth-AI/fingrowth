@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootTabView: View {
     @Bindable var settings: AppSettings
+    let apiClient: APIClient
     @State private var selection: RootTab = .research
 
     var body: some View {
@@ -18,7 +19,7 @@ struct RootTabView: View {
     private func view(for tab: RootTab) -> some View {
         switch tab {
         case .research:
-            ResearchView()
+            ResearchView(apiClient: apiClient)
         case .portfolio:
             PortfolioView()
         case .privacy:
