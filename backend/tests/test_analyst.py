@@ -276,6 +276,116 @@ def test_narrate_falls_back_when_llm_raises(monkeypatch):
     assert "RSI(14) is 42.00" in text
 
 
+def test_narrate_falls_back_when_llm_omits_indicators(monkeypatch):
+    """An LLM response that ignores the computed indicators is rejected.
+
+    The acceptance contract is "narrative references computed indicators";
+    if the LLM produces text that names neither RSI nor MACD nor mentions
+    their values, the analyst must substitute the deterministic template
+    so the contract holds end-to-end.
+    """
+    monkeypatch.setattr(analyst_module.settings, "openai_api_key", "sk-test")
+
+    class _IgnoresIndicatorsLLM:
+        def __init__(self, *a, **kw):
+            pass
+
+        def invoke(self, _messages):
+            class _Result:
+                content = (
+                    "The market may be exhibiting interesting patterns "
+                    "that suggest further research is warranted."
+                )
+
+            return _Result()
+
+    import langchain_openai
+
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", _IgnoresIndicatorsLLM)
+
+    closes = _sine_closes(60)
+    report = analyze(_packet(closes))
+
+    # The fallback emits these specific tokens; their presence proves the
+    # post-validator rejected the LLM output and used the template instead.
+    rsi = report.technical_indicators.rsi
+    assert rsi is not None
+    assert f"RSI(14) is {rsi:.2f}" in report.narrative
+
+
+def test_narrate_falls_back_when_llm_omits_value(monkeypatch):
+    """Naming RSI without quoting any value close to the computed one fails."""
+    monkeypatch.setattr(analyst_module.settings, "openai_api_key", "sk-test")
+
+    class _NamesOnlyLLM:
+        def __init__(self, *a, **kw):
+            pass
+
+        def invoke(self, _messages):
+            class _Result:
+                content = (
+                    "RSI and MACD may both be informative here; further "
+                    "research is suggested."
+                )
+
+            return _Result()
+
+    import langchain_openai
+
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", _NamesOnlyLLM)
+
+    closes = _sine_closes(60)
+    report = analyze(_packet(closes))
+    rsi = report.technical_indicators.rsi
+    assert rsi is not None
+    # Fell back: deterministic template emits the formatted value.
+    assert f"{rsi:.2f}" in report.narrative
+
+
+def test_narrate_accepts_compliant_llm_response(monkeypatch):
+    """A response that names + quotes each computed indicator survives validation.
+
+    For a 60-bar series all four indicators (RSI, MACD, SMA, Bollinger) are
+    computed, so the canned narrative must reference each of them or the
+    post-validator routes through the deterministic fallback.
+    """
+    from app.tools.technical import calculate_bollinger, calculate_sma
+
+    monkeypatch.setattr(analyst_module.settings, "openai_api_key", "sk-test")
+
+    closes = _sine_closes(60)
+    # Compute what the analyst will see so the fake LLM can echo accurate values.
+    expected_rsi = calculate_rsi(closes)
+    expected_macd = calculate_macd(closes)
+    expected_sma = calculate_sma(closes)
+    expected_boll = calculate_bollinger(closes)
+
+    canned_narrative = (
+        f"RSI(14) of {expected_rsi:.2f} may suggest neutral momentum; the "
+        f"MACD line at {expected_macd.macd:.4f} could indicate a mild "
+        f"uptrend. SMA(20) sits near {expected_sma:.2f} and the Bollinger "
+        f"midline is around {expected_boll.middle:.2f} for research purposes."
+    )
+
+    class _CompliantLLM:
+        def __init__(self, *a, **kw):
+            pass
+
+        def invoke(self, _messages):
+            class _Result:
+                content = canned_narrative
+
+            return _Result()
+
+    import langchain_openai
+
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", _CompliantLLM)
+
+    report = analyze(_packet(closes))
+    # The LLM output was preserved verbatim — no fallback substitution.
+    assert report.narrative == canned_narrative
+
+
 # ---------------------------------------------------------------------------
 # Graph node integration
 # ---------------------------------------------------------------------------

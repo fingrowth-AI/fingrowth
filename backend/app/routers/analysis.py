@@ -4,15 +4,26 @@ Replaces the P1-04 stub. The endpoint runs the compiled LangGraph pipeline
 (Router → Researcher → Analyst → Risk Critic) and streams progress events
 via Server-Sent Events so the iOS client can render incremental UI:
 
-    event: progress      data: {"stage": "researching"}
-    event: progress      data: {"stage": "analyzing"}   # skipped on general
-    event: progress      data: {"stage": "reviewing"}
-    event: final_result  data: <AnalysisResponse JSON>
-    event: error         data: {"message": "..."}        # on pipeline failure
+    event: progress         data: {"stage": "researching"}
+    event: partial_result   data: {"stage": "research", "research": {...}}
+    event: progress         data: {"stage": "analyzing"}   # skipped on general
+    event: partial_result   data: {"stage": "analysis",
+                                   "analysis": {"technical": {...},
+                                                "confidence": "..."}}
+    event: progress         data: {"stage": "reviewing"}
+    event: final_result     data: <AnalysisResponse JSON>
+    event: error            data: {"message": "..."}      # on pipeline failure
 
 The graph runs via ``astream`` so per-node completions drive the progress
 emission, but the agents themselves remain unchanged — they don't need to
 know they're being streamed.
+
+The ``partial_result`` events deliberately exclude the analyst's narrative:
+that text has not yet passed through the Risk Critic guardrail, and the
+critic may substitute a safe default in the ``final_result``. Emitting the
+raw narrative early would let an iOS client render compliance-violating
+text. Deterministic outputs (research data, indicators, confidence) are
+safe to ship incrementally.
 """
 
 from __future__ import annotations
@@ -52,6 +63,43 @@ def _sse_event(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _partial_research_payload(final_state: dict[str, Any]) -> dict[str, Any]:
+    """Project the researcher's output for an incremental SSE frame.
+
+    Mirrors the shape of ``AnalysisResponse.research`` so the iOS client can
+    merge the partial into the same field of its draft response when the
+    final event eventually arrives.
+    """
+    research_dict = final_state.get("research") or {}
+    return {
+        "stage": "research",
+        "research": {
+            "filings": research_dict.get("filings", []),
+            "news": research_dict.get("news", []),
+        },
+    }
+
+
+def _partial_analysis_payload(final_state: dict[str, Any]) -> dict[str, Any]:
+    """Project the analyst's deterministic outputs for an incremental SSE frame.
+
+    The narrative is intentionally withheld until the Risk Critic has run —
+    see the module docstring. Technical indicators and confidence are
+    deterministic functions of the price data and are safe to ship before
+    review.
+    """
+    analysis_dict = final_state.get("analysis") or {}
+    return {
+        "stage": "analysis",
+        "analysis": {
+            "technical": analysis_dict.get("technical_indicators") or {},
+            "confidence": analysis_dict.get(
+                "confidence_level", "insufficient_data"
+            ),
+        },
+    }
+
+
 def _build_response(
     session_id: uuid.UUID,
     ticker: str,
@@ -74,16 +122,29 @@ def _build_response(
     )
 
     indicators = analysis_dict.get("technical_indicators") or {}
-    analysis = AnalysisData(
-        technical=indicators,
-        narrative=analysis_dict.get("narrative", ""),
-        confidence=analysis_dict.get("confidence_level", "insufficient_data"),
-    )
 
     risk_review = (
         RiskReview.model_validate(risk_dict)
         if risk_dict
         else RiskReview(disclaimer=STANDARD_DISCLAIMER)
+    )
+
+    # The Risk Critic is the authority on what narrative is safe to display:
+    # on rejection it substitutes a safe default, on approval it mirrors the
+    # analyst's text. Prefer it whenever a review was produced so the wire
+    # response cannot leak a rejected narrative. The general_research route
+    # bypasses the analyst and leaves modified_response empty — fall through
+    # to the (also-empty) analyst value in that case.
+    analyst_narrative = analysis_dict.get("narrative", "")
+    if not risk_review.approved or risk_review.modified_response:
+        narrative_text = risk_review.modified_response
+    else:
+        narrative_text = analyst_narrative
+
+    analysis = AnalysisData(
+        technical=indicators,
+        narrative=narrative_text,
+        confidence=analysis_dict.get("confidence_level", "insufficient_data"),
     )
 
     return AnalysisResponse(
@@ -139,6 +200,9 @@ async def _run_pipeline(
                     final_state[key] = value
 
                 if node_name == "researcher":
+                    yield _sse_event(
+                        "partial_result", _partial_research_payload(final_state)
+                    )
                     route = final_state.get("route", "")
                     next_stage = (
                         "analyzing"
@@ -147,6 +211,9 @@ async def _run_pipeline(
                     )
                     yield _sse_event("progress", {"stage": next_stage})
                 elif node_name == "analyst":
+                    yield _sse_event(
+                        "partial_result", _partial_analysis_payload(final_state)
+                    )
                     yield _sse_event("progress", {"stage": "reviewing"})
 
         response = _build_response(session_id, ticker, final_state)

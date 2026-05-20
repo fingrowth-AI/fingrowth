@@ -201,6 +201,61 @@ def _fallback_narrative(
     return " ".join(parts)
 
 
+def _narrative_references_indicators(
+    text: str, indicators: TechnicalIndicators
+) -> bool:
+    """Whether the narrative names and quotes each computed indicator.
+
+    The deterministic fallback satisfies the design-doc acceptance contract
+    ("narrative references computed indicators") by construction. The LLM
+    does not, so we post-validate its output. For each non-None indicator
+    we require:
+      * the indicator name (RSI / MACD / SMA / Bollinger) to appear, AND
+      * the numeric value to appear at a precision near the fallback's
+        formatter — we accept one digit of slack either side so typical
+        LLM formatting choices don't trigger a needless fallback while
+        clearly-fabricated values (e.g. 88.88 for a true RSI of 55.12)
+        still fail to match.
+
+    Returning False routes the caller into :func:`_fallback_narrative`,
+    keeping the narrative auditable even when the LLM goes off-script.
+    """
+    if not text:
+        return False
+    upper = text.upper()
+
+    def _value_quoted(value: float, precision: int) -> bool:
+        return any(
+            f"{value:.{p}f}" in text
+            for p in range(max(precision - 1, 0), precision + 2)
+        )
+
+    if indicators.rsi is not None:
+        if "RSI" not in upper or not _value_quoted(indicators.rsi, 2):
+            return False
+    if indicators.macd is not None:
+        if "MACD" not in upper:
+            return False
+        # Any of the three MACD components quoted is sufficient — the LLM
+        # is allowed to lead with whichever it finds most informative.
+        if not (
+            _value_quoted(indicators.macd.macd, 4)
+            or _value_quoted(indicators.macd.signal, 4)
+            or _value_quoted(indicators.macd.histogram, 4)
+        ):
+            return False
+    # SMA and Bollinger are secondary signals — only require the name so
+    # the check doesn't reject otherwise-good narratives that focus on
+    # the primary RSI/MACD indicators.
+    if indicators.sma_20 is not None and (
+        "SMA" not in upper and "MOVING AVERAGE" not in upper
+    ):
+        return False
+    if indicators.bollinger is not None and "BOLLINGER" not in upper:
+        return False
+    return True
+
+
 def narrate(
     ticker: str,
     indicators: TechnicalIndicators,
@@ -210,9 +265,11 @@ def narrate(
     """LLM narration of the indicators, with a deterministic fallback.
 
     Tests monkeypatch this function directly to keep the suite offline. If
-    ``openai_api_key`` is unset, or the LLM call raises for any reason, the
-    deterministic template is used instead so the agent never crashes the
-    pipeline because of an external dependency.
+    ``openai_api_key`` is unset, the LLM call raises, or the LLM's output
+    fails to reference the computed indicators, the deterministic template
+    is used instead so the agent never crashes the pipeline and the
+    "narrative references computed indicators" acceptance contract holds
+    in every path.
     """
     if not settings.openai_api_key:
         return _fallback_narrative(ticker, indicators, packet, portfolio_profile)
@@ -244,9 +301,15 @@ def narrate(
             ]
         )
         text = str(result.content).strip()
-        return text or _fallback_narrative(
-            ticker, indicators, packet, portfolio_profile
-        )
+        if not _narrative_references_indicators(text, indicators):
+            logger.warning(
+                "LLM narrative did not reference all computed indicators; "
+                "falling back to deterministic template"
+            )
+            return _fallback_narrative(
+                ticker, indicators, packet, portfolio_profile
+            )
+        return text
     except Exception as exc:
         logger.warning(
             "LLM narration failed, using deterministic fallback: %s", exc

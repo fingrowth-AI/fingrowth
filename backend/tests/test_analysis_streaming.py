@@ -353,3 +353,138 @@ async def test_invalid_analysis_type_returns_422(client: AsyncClient):
         json={"query": "q", "ticker": "AAPL", "analysis_type": "buy_signal"},
     )
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Acceptance: partial_result events are emitted (P3-05 outputs section)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("analysis_type", ["fundamental", "technical"])
+async def test_partial_result_emitted_for_research_and_analysis_stages(
+    client: AsyncClient, analysis_type: str
+):
+    """Analyst routes emit one partial_result for research and one for analysis."""
+    _s, _ct, events = await _collect_events(
+        client,
+        {"query": "q", "ticker": "AAPL", "analysis_type": analysis_type},
+    )
+    partials = [e for e in events if e["event"] == "partial_result"]
+    stages = [p["data"]["stage"] for p in partials]
+    assert stages == ["research", "analysis"]
+
+
+@pytest.mark.asyncio
+async def test_partial_result_for_general_route_only_research(
+    client: AsyncClient,
+):
+    """The general route bypasses the analyst, so only the research partial fires."""
+    _s, _ct, events = await _collect_events(
+        client, {"query": "q", "ticker": "AAPL", "analysis_type": "general"}
+    )
+    partials = [e for e in events if e["event"] == "partial_result"]
+    stages = [p["data"]["stage"] for p in partials]
+    assert stages == ["research"]
+
+
+@pytest.mark.asyncio
+async def test_analysis_partial_result_excludes_unreviewed_narrative(
+    client: AsyncClient,
+):
+    """Narrative ships only in final_result — never in the analysis partial.
+
+    The Risk Critic is the guardrail; leaking the raw analyst text in a
+    partial would defeat its purpose.
+    """
+    _s, _ct, events = await _collect_events(
+        client, {"query": "q", "ticker": "AAPL", "analysis_type": "technical"}
+    )
+    analysis_partial = next(
+        e for e in events
+        if e["event"] == "partial_result" and e["data"]["stage"] == "analysis"
+    )
+    assert "narrative" not in analysis_partial["data"]["analysis"]
+    # Deterministic indicators are safe to ship early.
+    assert "technical" in analysis_partial["data"]["analysis"]
+    assert "confidence" in analysis_partial["data"]["analysis"]
+
+
+@pytest.mark.asyncio
+async def test_partial_result_arrives_before_final_result(client: AsyncClient):
+    """Partials must precede final_result so the iOS client can render early."""
+    _s, _ct, events = await _collect_events(
+        client, {"query": "q", "ticker": "AAPL", "analysis_type": "technical"}
+    )
+    types = [e["event"] for e in events]
+    last_partial = max(i for i, t in enumerate(types) if t == "partial_result")
+    final_idx = types.index("final_result")
+    assert last_partial < final_idx
+
+
+# ---------------------------------------------------------------------------
+# Acceptance: rejected narrative is replaced by risk_review.modified_response
+# in the final_result (Risk Critic is authoritative for displayed narrative).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rejected_narrative_replaced_by_safe_default_in_final_result(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """A narrative the Risk Critic rejects must NOT leak via final_result.
+
+    The wire-level analysis.narrative is sourced from the critic's
+    modified_response, so rejected text is substituted with the safe
+    default rather than passed through unchanged.
+    """
+
+    def _violating_narrate(ticker, indicators, packet, portfolio_profile=None):
+        # Triggers buy_sell_recommendation + future_price_claim flags, which
+        # are both rejection codes.
+        return (
+            "Recommendation: buy now. Our 12-month price target is $250 "
+            "and the stock will reach $300 by year end."
+        )
+
+    monkeypatch.setattr(
+        "app.agents.analyst.narrate", _violating_narrate
+    )
+
+    _s, _ct, events = await _collect_events(
+        client, {"query": "q", "ticker": "AAPL", "analysis_type": "technical"}
+    )
+    final = next(e for e in events if e["event"] == "final_result")
+    narrative = final["data"]["analysis"]["narrative"]
+    review = final["data"]["risk_review"]
+
+    assert review["approved"] is False
+    # The displayed narrative is the safe default, not the violating text.
+    assert "cannot share this analysis" in narrative.lower()
+    assert "buy now" not in narrative
+    assert "$250" not in narrative
+    # And it matches the critic's modified_response verbatim — single source
+    # of truth for what is safe to show.
+    assert narrative == review["modified_response"]
+
+
+@pytest.mark.asyncio
+async def test_approved_narrative_passes_through_to_final_result(
+    client: AsyncClient,
+):
+    """When the critic approves, the analyst's narrative survives unchanged.
+
+    Sanity check that the modified_response substitution doesn't accidentally
+    erase legitimate narratives.
+    """
+    _s, _ct, events = await _collect_events(
+        client, {"query": "q", "ticker": "AAPL", "analysis_type": "technical"}
+    )
+    final = next(e for e in events if e["event"] == "final_result")
+    narrative = final["data"]["analysis"]["narrative"]
+    review = final["data"]["risk_review"]
+
+    assert review["approved"] is True
+    # The deterministic fallback narrative survives.
+    assert "RSI" in narrative
+    assert narrative == review["modified_response"]
