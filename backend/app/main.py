@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from app.routers import analysis, health
 
 app = FastAPI(
-    title="AI Investment Strategist API",
+    title="FinGrowth API",
     version="0.1.0",
     description=(
         "Privacy-preserving investment research backend. "

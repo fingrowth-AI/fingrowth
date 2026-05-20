@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/investmentstrategist"
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/fingrowth"
     )
 
     # Redis
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # Data sources
     alpha_vantage_api_key: str = ""
     finnhub_api_key: str = ""
-    sec_edgar_user_agent: str = "AIInvestmentStrategist/1.0 (research-tool)"
+    sec_edgar_user_agent: str = "FinGrowth/1.0 (research-tool)"
 
     # Alpaca paper trading (paper-api only — never live endpoint)
     alpaca_api_key: str = ""
