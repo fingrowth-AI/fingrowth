@@ -56,11 +56,27 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 # explicit at the API boundary — adding a new internal route does not silently
 # change the wire-level event sequence.
 _ROUTES_WITH_ANALYST = {"fundamental_analysis", "technical_analysis"}
+_WIRE_FILING_LIMIT = 10
+_WIRE_NEWS_LIMIT = 25
 
 
 def _sse_event(event: str, data: dict[str, Any]) -> str:
     """Format one SSE frame. Trailing blank line is part of the protocol."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _wire_research_payload(research_dict: dict[str, Any]) -> dict[str, Any]:
+    """Bound research lists before putting them on the SSE wire.
+
+    The researcher may gather hundreds of news items. The analyst still sees
+    the full packet in graph state, but iOS does not need every raw article in
+    a single streaming frame. Keeping the public payload bounded avoids very
+    large one-line SSE ``data:`` fields, which are fragile on mobile clients.
+    """
+    return {
+        "filings": (research_dict.get("filings") or [])[:_WIRE_FILING_LIMIT],
+        "news": (research_dict.get("news") or [])[:_WIRE_NEWS_LIMIT],
+    }
 
 
 def _partial_research_payload(final_state: dict[str, Any]) -> dict[str, Any]:
@@ -73,10 +89,7 @@ def _partial_research_payload(final_state: dict[str, Any]) -> dict[str, Any]:
     research_dict = final_state.get("research") or {}
     return {
         "stage": "research",
-        "research": {
-            "filings": research_dict.get("filings", []),
-            "news": research_dict.get("news", []),
-        },
+        "research": _wire_research_payload(research_dict),
     }
 
 
@@ -117,8 +130,7 @@ def _build_response(
     risk_dict = final_state.get("risk_review") or {}
 
     research = ResearchData(
-        filings=research_dict.get("filings", []),
-        news=research_dict.get("news", []),
+        **_wire_research_payload(research_dict),
     )
 
     indicators = analysis_dict.get("technical_indicators") or {}

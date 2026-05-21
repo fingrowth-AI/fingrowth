@@ -221,6 +221,21 @@ async def test_final_result_contains_all_required_fields(client: AsyncClient):
     assert data["disclaimer"] == STANDARD_DISCLAIMER
 
 
+def test_wire_research_payload_is_bounded_for_mobile_sse():
+    """Large research packets should not become huge one-line SSE frames."""
+    from app.routers.analysis import _wire_research_payload
+
+    research = {
+        "filings": [{"form": "10-Q", "i": i} for i in range(20)],
+        "news": [{"headline": f"item {i}"} for i in range(100)],
+    }
+
+    payload = _wire_research_payload(research)
+
+    assert len(payload["filings"]) == 10
+    assert len(payload["news"]) == 25
+
+
 @pytest.mark.asyncio
 async def test_final_result_event_is_last_event(client: AsyncClient):
     """No frames may follow the terminal final_result event."""
