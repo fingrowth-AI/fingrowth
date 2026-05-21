@@ -21,6 +21,11 @@ struct ResearchView: View {
     @State private var analysisType: AnalysisType = .technical
     @State private var showSuggestions: Bool = false
     @State private var lastPersistedSessionID: UUID?
+    // Session ID of the last-saved history entry — used to link a paper
+    // trade back to the analysis that inspired it (P4-04). UUID rather than
+    // PersistentIdentifier because SwiftData rejects PersistentIdentifier as
+    // a stored attribute on PaperTradeRecord.
+    @State private var lastPersistedSessionLinkID: UUID?
     @State private var selectedHistoryEntry: ResearchHistoryEntry?
 
     // Wire names mirror backend/app/routers/analysis.py — progress frames emit
@@ -61,7 +66,8 @@ struct ResearchView: View {
                         ticker: ticker,
                         sourceQuery: entry.query,
                         sourceAnalysisType: entry.analysisType,
-                        sourceConfidence: entry.confidence
+                        sourceConfidence: entry.confidence,
+                        sourceResearchSessionID: entry.sessionID
                     )
                     selectedHistoryEntry = nil
                 }
@@ -256,7 +262,8 @@ struct ResearchView: View {
                                 ticker: final.ticker,
                                 sourceQuery: query,
                                 sourceAnalysisType: analysisType,
-                                sourceConfidence: final.analysis.confidence
+                                sourceConfidence: final.analysis.confidence,
+                                sourceResearchSessionID: lastPersistedSessionLinkID
                             )
                         } label: {
                             Label("Test with paper trade", systemImage: "arrow.right.circle.fill")
@@ -427,6 +434,7 @@ struct ResearchView: View {
         do {
             try modelContext.save()
             lastPersistedSessionID = response.sessionId
+            lastPersistedSessionLinkID = entry.sessionID
         } catch {
             // History persistence is best-effort; surface failure as a footnote
             // rather than blocking the result render.
@@ -438,13 +446,15 @@ struct ResearchView: View {
         ticker: String,
         sourceQuery: String,
         sourceAnalysisType: AnalysisType,
-        sourceConfidence: String
+        sourceConfidence: String,
+        sourceResearchSessionID: UUID? = nil
     ) {
         paperTradePrefill.enqueue(.init(
             ticker: ticker.uppercased(),
             sourceQuery: sourceQuery,
             sourceAnalysisType: sourceAnalysisType,
-            sourceConfidence: sourceConfidence
+            sourceConfidence: sourceConfidence,
+            sourceResearchSessionID: sourceResearchSessionID
         ))
         onSwitchToPortfolio()
     }

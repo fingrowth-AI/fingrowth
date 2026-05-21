@@ -40,6 +40,9 @@
 		AAAA0002AAAA0002AAAA0002 /* ResearchHistoryEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA0001AAAA0001AAAA0001 /* ResearchHistoryEntry.swift */; };
 		BBBB0002BBBB0002BBBB0002 /* TickerCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB0001BBBB0001BBBB0001 /* TickerCatalog.swift */; };
 		CCCC0002CCCC0002CCCC0002 /* PaperTradePrefill.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC0001CCCC0001CCCC0001 /* PaperTradePrefill.swift */; };
+		DDDD0002DDDD0002DDDD0002 /* PaperTrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0001DDDD0001DDDD0001 /* PaperTrade.swift */; };
+		EEEE0002EEEE0002EEEE0002 /* PaperTradingClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE0001EEEE0001EEEE0001 /* PaperTradingClient.swift */; };
+		FFFF0002FFFF0002FFFF0002 /* PortfolioStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF0001FFFF0001FFFF0001 /* PortfolioStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -88,6 +91,9 @@
 		AAAA0001AAAA0001AAAA0001 /* ResearchHistoryEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchHistoryEntry.swift; sourceTree = "<group>"; };
 		BBBB0001BBBB0001BBBB0001 /* TickerCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TickerCatalog.swift; sourceTree = "<group>"; };
 		CCCC0001CCCC0001CCCC0001 /* PaperTradePrefill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTradePrefill.swift; sourceTree = "<group>"; };
+		DDDD0001DDDD0001DDDD0001 /* PaperTrade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTrade.swift; sourceTree = "<group>"; };
+		EEEE0001EEEE0001EEEE0001 /* PaperTradingClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTradingClient.swift; sourceTree = "<group>"; };
+		FFFF0001FFFF0001FFFF0001 /* PortfolioStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortfolioStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -97,6 +103,7 @@
 				F21182A4D3B5EB8B0761D7D2 /* AnalysisAPI.swift */,
 				8BE7EC5B62AD41CA20D3F1EE /* AuditEntry.swift */,
 				C5FC323C7511F1088A1C015E /* JSONValue.swift */,
+				DDDD0001DDDD0001DDDD0001 /* PaperTrade.swift */,
 				198A6B6B9353E870FAB7CEE7 /* PrivateLedger.swift */,
 				AAAA0001AAAA0001AAAA0001 /* ResearchHistoryEntry.swift */,
 				D925F43446D8B6B05C1BE8F1 /* ShareableProfile.swift */,
@@ -172,6 +179,8 @@
 				4DE69FBE300A997A0AB294EA /* DifferentialPrivacy.swift */,
 				21234ACAF306DFF1BCE8E8C9 /* GemmaService.swift */,
 				CCCC0001CCCC0001CCCC0001 /* PaperTradePrefill.swift */,
+				EEEE0001EEEE0001EEEE0001 /* PaperTradingClient.swift */,
+				FFFF0001FFFF0001FFFF0001 /* PortfolioStore.swift */,
 				56CA8FBD5A4D2A5F43978972 /* PrivacyAuditLog.swift */,
 				D86C2BFD2F205263C068D0D1 /* QueryRewriter.swift */,
 				06C4B2465AD9E4584A96CF25 /* ThermalMonitor.swift */,
@@ -294,6 +303,9 @@
 				A2DF56727501261594A1D602 /* PrivateLedger.swift in Sources */,
 				20FF285108A9C8253B38A70D /* QueryRewriter.swift in Sources */,
 				CCCC0002CCCC0002CCCC0002 /* PaperTradePrefill.swift in Sources */,
+				DDDD0002DDDD0002DDDD0002 /* PaperTrade.swift in Sources */,
+				EEEE0002EEEE0002EEEE0002 /* PaperTradingClient.swift in Sources */,
+				FFFF0002FFFF0002FFFF0002 /* PortfolioStore.swift in Sources */,
 				AAAA0002AAAA0002AAAA0002 /* ResearchHistoryEntry.swift in Sources */,
 				BBBB0002BBBB0002BBBB0002 /* TickerCatalog.swift in Sources */,
 				2732289B772D2DB199C88F99 /* ResearchView.swift in Sources */,

@@ -9,6 +9,11 @@ import SwiftData
 // of relationship tables for what is effectively dynamic LLM output.
 @Model
 final class ResearchHistoryEntry {
+    // Backend session ID — also the stable cross-model link used by
+    // PaperTradeRecord to point back at the analysis that inspired it.
+    // Defaulted so the SwiftData schema migration from earlier P4-03 builds
+    // (which lacked the column) doesn't crash on first launch.
+    @Attribute(.unique) var sessionID: UUID = UUID()
     var createdAt: Date
     var ticker: String
     var query: String
@@ -22,6 +27,7 @@ final class ResearchHistoryEntry {
     var riskModifiedResponse: String
 
     init(
+        sessionID: UUID = UUID(),
         createdAt: Date,
         ticker: String,
         query: String,
@@ -34,6 +40,7 @@ final class ResearchHistoryEntry {
         riskApproved: Bool,
         riskModifiedResponse: String
     ) {
+        self.sessionID = sessionID
         self.createdAt = createdAt
         self.ticker = ticker
         self.query = query
@@ -66,6 +73,7 @@ extension ResearchHistoryEntry {
         let indicators = (try? encoder.encode(response.analysis.technical)) ?? Data("{}".utf8)
         let flags = (try? encoder.encode(response.riskReview.flags)) ?? Data("[]".utf8)
         return ResearchHistoryEntry(
+            sessionID: response.sessionId,
             createdAt: now,
             ticker: response.ticker,
             query: query.query,
