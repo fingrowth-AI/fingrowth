@@ -372,6 +372,39 @@ final class APIClientTests: XCTestCase {
         }))
     }
 
+    func testStreamThrowingAfterFinalResultDoesNotRetry() async throws {
+        // The connection drops *after* the final_result frame is delivered but
+        // before a clean close. We already have the answer — re-running the
+        // analysis would be wasteful and could double-bill the backend.
+        let lines = [
+            "event: progress",
+            "data: {\"stage\": \"researching\"}",
+            "",
+            "event: final_result",
+            "data: \(sampleFinalResultLines())",
+            "",
+        ]
+        let transport = MockSSETransport(scripts: [
+            .successThenError(lines, URLError(.networkConnectionLost)),
+        ])
+        let client = makeClient(transport: transport)
+
+        var collected: [AnalysisEvent] = []
+        do {
+            for try await event in client.streamAnalysis(query: sampleQuery()) {
+                collected.append(event)
+            }
+        } catch {
+            // A trailing throw may still surface as a stream error; that's fine
+            // as long as we delivered the final_result and didn't retry.
+        }
+
+        XCTAssertEqual(transport.requestCount, 1, "must not retry once final_result was delivered")
+        XCTAssertTrue(collected.contains(where: {
+            if case .finalResult = $0 { return true } else { return false }
+        }), "final_result should have been yielded before the drop")
+    }
+
     // MARK: - Helpers
 
     private func makeClient(
@@ -428,6 +461,9 @@ final class MockSSETransport: SSEByteStreamProviding, @unchecked Sendable {
     enum Script {
         case success([String])
         case failure(Error)
+        // Yield the lines, then throw — simulates a connection drop *after*
+        // some/all frames have been delivered (e.g. after final_result).
+        case successThenError([String], Error)
     }
 
     private let lock = NSLock()
@@ -489,33 +525,43 @@ final class MockSSETransport: SSEByteStreamProviding, @unchecked Sendable {
         case .failure(let error):
             throw error
         case .success(let lines):
-            let delay = frameDelay
-            let stream = AsyncThrowingStream<String, Error> { continuation in
-                let task = Task {
-                    for line in lines {
-                        if Task.isCancelled { break }
-                        if delay != .zero {
-                            try? await Task.sleep(for: delay)
-                        }
-                        continuation.yield(line)
-                    }
-                    continuation.finish()
-                }
-                continuation.onTermination = { [weak self] _ in
-                    guard let self else { return }
-                    self.lock.lock()
-                    self._terminations += 1
-                    self.lock.unlock()
-                    task.cancel()
-                }
-            }
-            let response = HTTPURLResponse(
-                url: request.url ?? URL(string: "http://test.local")!,
-                statusCode: statusCode,
-                httpVersion: nil,
-                headerFields: ["Content-Type": "text/event-stream"]
-            )!
-            return (stream, response)
+            return try await makeStream(lines: lines, request: request, throwingAfter: nil)
+        case .successThenError(let lines, let error):
+            return try await makeStream(lines: lines, request: request, throwingAfter: error)
         }
+    }
+
+    private func makeStream(
+        lines: [String],
+        request: URLRequest,
+        throwingAfter error: Error?
+    ) async throws -> (SSELineStream, HTTPURLResponse) {
+        let delay = frameDelay
+        let stream = AsyncThrowingStream<String, Error> { continuation in
+            let task = Task {
+                for line in lines {
+                    if Task.isCancelled { break }
+                    if delay != .zero {
+                        try? await Task.sleep(for: delay)
+                    }
+                    continuation.yield(line)
+                }
+                continuation.finish(throwing: error)
+            }
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.lock()
+                self._terminations += 1
+                self.lock.unlock()
+                task.cancel()
+            }
+        }
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "http://test.local")!,
+            statusCode: statusCode,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        return (stream, response)
     }
 }

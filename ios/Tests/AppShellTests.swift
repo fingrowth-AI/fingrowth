@@ -26,7 +26,6 @@ final class AppShellTests: XCTestCase {
                 "AuditEntry",
                 "ResearchHistoryEntry",
                 "PaperTradeRecord",
-                "PortfolioSnapshot",
                 "LedgerHolding",
             ]
         )

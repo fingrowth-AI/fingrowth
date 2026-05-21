@@ -19,6 +19,7 @@ from app.tools.paper_trading import (
     LiveEndpointError,
     MissingCredentialsError,
     get_order_history,
+    get_portfolio_history,
     get_positions,
     place_paper_order,
 )
@@ -355,6 +356,61 @@ async def test_get_order_history_refuses_live_endpoint(monkeypatch):
     monkeypatch.setattr(settings, "alpaca_base_url", "https://api.alpaca.markets")
     with pytest.raises(LiveEndpointError):
         await get_order_history()
+
+
+# ---------------------------------------------------------------------------
+# Portfolio history
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_history_flattens_series():
+    captured: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(req)
+        return httpx.Response(
+            200,
+            json={
+                # 4 days; the first is a pre-funding 0.0, the third is null.
+                "timestamp": [1705190400, 1705276800, 1705363200, 1705449600],
+                "equity": [0.0, 10000.0, None, 10250.5],
+                "profit_loss": [0.0, 0.0, None, 250.5],
+                "base_value": 10000.0,
+                "timeframe": "1D",
+            },
+        )
+
+    async with _make_client(handler) as client:
+        history = await get_portfolio_history(client=client)
+
+    # The pre-funding 0.0 and the null sample are both dropped.
+    assert history.base_value == 10000.0
+    assert [p.equity for p in history.points] == [10000.0, 10250.5]
+    assert history.points[0].date == "2024-01-15"
+    assert captured[0].url.host == PAPER_DOMAIN
+    assert captured[0].url.path == "/v2/account/portfolio/history"
+    assert captured[0].url.params.get("period") == "1M"
+    assert captured[0].url.params.get("timeframe") == "1D"
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_history_rejects_bad_period():
+    with pytest.raises(ValueError, match="period"):
+        await get_portfolio_history(period="forever")
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_history_rejects_bad_timeframe():
+    with pytest.raises(ValueError, match="timeframe"):
+        await get_portfolio_history(timeframe="1Year")
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_history_refuses_live_endpoint(monkeypatch):
+    monkeypatch.setattr(settings, "alpaca_base_url", "https://api.alpaca.markets")
+    with pytest.raises(LiveEndpointError):
+        await get_portfolio_history()
 
 
 # ---------------------------------------------------------------------------

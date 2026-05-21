@@ -20,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.models.market import PriceBar
-from app.models.trading import Order, Position
+from app.models.trading import Order, PortfolioHistory, PortfolioHistoryPoint, Position
 from app.routers import paper_trading as router_module
 from app.tools.paper_trading import LiveEndpointError, MissingCredentialsError
 
@@ -272,3 +272,61 @@ async def test_benchmark_returns_sorted_close_series(monkeypatch, client: AsyncC
 async def test_benchmark_rejects_non_positive_days(client: AsyncClient):
     resp = await client.get("/api/v1/paper/benchmark?days=0")
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# GET /paper/portfolio-history
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_portfolio_history_returns_equity_series(
+    monkeypatch, client: AsyncClient
+):
+    captured: dict = {}
+
+    async def fake_history(period="1M", timeframe="1D"):
+        captured["period"] = period
+        captured["timeframe"] = timeframe
+        return PortfolioHistory(
+            base_value=10000.0,
+            points=[
+                PortfolioHistoryPoint(date="2024-01-15", equity=10000.0),
+                PortfolioHistoryPoint(date="2024-01-16", equity=10250.5),
+            ],
+        )
+
+    monkeypatch.setattr(router_module, "get_portfolio_history", fake_history)
+
+    resp = await client.get("/api/v1/paper/portfolio-history?period=3M&timeframe=1D")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["base_value"] == 10000.0
+    assert [p["equity"] for p in body["points"]] == [10000.0, 10250.5]
+    assert captured == {"period": "3M", "timeframe": "1D"}
+
+
+@pytest.mark.asyncio
+async def test_portfolio_history_bad_period_returns_400(
+    monkeypatch, client: AsyncClient
+):
+    async def fake_history(period="1M", timeframe="1D"):
+        raise ValueError("period must be one of [...]")
+
+    monkeypatch.setattr(router_module, "get_portfolio_history", fake_history)
+
+    resp = await client.get("/api/v1/paper/portfolio-history?period=forever")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_portfolio_history_live_endpoint_returns_503(
+    monkeypatch, client: AsyncClient
+):
+    async def fake_history(period="1M", timeframe="1D"):
+        raise LiveEndpointError("nope")
+
+    monkeypatch.setattr(router_module, "get_portfolio_history", fake_history)
+
+    resp = await client.get("/api/v1/paper/portfolio-history")
+    assert resp.status_code == 503

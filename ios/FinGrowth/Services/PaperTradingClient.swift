@@ -35,6 +35,7 @@ protocol PaperTradingService: Sendable {
     func listOrders(limit: Int, status: String) async throws -> [BrokerOrder]
     func placeOrder(_ request: PlacePaperOrderRequest) async throws -> BrokerOrder
     func benchmark(symbol: String, days: Int) async throws -> BenchmarkSeries
+    func portfolioHistory(period: String, timeframe: String) async throws -> PortfolioHistorySeries
 }
 
 struct PlacePaperOrderRequest: Encodable, Sendable, Equatable {
@@ -100,6 +101,18 @@ final class PaperTradingClient: PaperTradingService {
         components.queryItems = [
             URLQueryItem(name: "symbol", value: symbol),
             URLQueryItem(name: "days", value: String(days)),
+        ]
+        return try await get(components.url!.relativeString)
+    }
+
+    func portfolioHistory(
+        period: String = "1M",
+        timeframe: String = "1D"
+    ) async throws -> PortfolioHistorySeries {
+        var components = URLComponents(string: "/api/v1/paper/portfolio-history")!
+        components.queryItems = [
+            URLQueryItem(name: "period", value: period),
+            URLQueryItem(name: "timeframe", value: timeframe),
         ]
         return try await get(components.url!.relativeString)
     }

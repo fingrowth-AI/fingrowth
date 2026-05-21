@@ -78,6 +78,7 @@ enum CSVPrivacyParser {
             accountName: resolvedName,
             importedAt: now,
             rawCSVDigest: sha256(text),
+            sourceBrokerage: format.rawValue,
             holdings: holdings
         )
         let profile = makeShareableProfile(from: holdings, now: now)
@@ -93,7 +94,21 @@ enum CSVPrivacyParser {
         // by quantity at extraction time.
         let costBasisIndex: Int
         let costBasisIsTotal: Bool
+        // Optional richer columns (design §8.1 Holding). Brokerage-agnostic:
+        // resolved from a shared candidate set after the format is detected.
+        var purchaseDateIndex: Int? = nil
+        var accountTypeIndex: Int? = nil
     }
+
+    // Brokerage-agnostic optional columns. Header names are normalized
+    // (lowercased, separators stripped) before lookup.
+    private static let purchaseDateHeaders: Set<String> = [
+        "dateacquired", "acquired", "acquisitiondate",
+        "purchasedate", "datepurchased", "tradedate",
+    ]
+    private static let accountTypeHeaders: Set<String> = [
+        "accounttype", "registrationtype",
+    ]
 
     private static let fidelitySymbolHeaders: Set<String> = ["symbol"]
     private static let fidelityQuantityHeaders: Set<String> = ["quantity"]
@@ -114,6 +129,10 @@ enum CSVPrivacyParser {
         headers: [String]
     ) -> (BrokerageFormat, ColumnMap)? {
         let headerSet = Set(headers)
+        // Optional richer columns are resolved the same way regardless of
+        // brokerage; nil when the export doesn't ship them.
+        let dateIdx = firstIndex(in: headers, anyOf: purchaseDateHeaders)
+        let acctIdx = firstIndex(in: headers, anyOf: accountTypeHeaders)
 
         // Fidelity prefers its per-share "Average Cost Basis"; falls back to
         // the total when only the aggregate column is exported.
@@ -125,14 +144,18 @@ enum CSVPrivacyParser {
                     symbolIndex: symbol,
                     quantityIndex: qty,
                     costBasisIndex: cost,
-                    costBasisIsTotal: false
+                    costBasisIsTotal: false,
+                    purchaseDateIndex: dateIdx,
+                    accountTypeIndex: acctIdx
                 ))
             } else if let cost = firstIndex(in: headers, anyOf: fidelityCostTotalHeaders) {
                 return (.fidelity, ColumnMap(
                     symbolIndex: symbol,
                     quantityIndex: qty,
                     costBasisIndex: cost,
-                    costBasisIsTotal: true
+                    costBasisIsTotal: true,
+                    purchaseDateIndex: dateIdx,
+                    accountTypeIndex: acctIdx
                 ))
             }
         }
@@ -147,7 +170,9 @@ enum CSVPrivacyParser {
                 symbolIndex: symbol,
                 quantityIndex: qty,
                 costBasisIndex: cost,
-                costBasisIsTotal: true
+                costBasisIsTotal: true,
+                purchaseDateIndex: dateIdx,
+                accountTypeIndex: acctIdx
             ))
         }
 
@@ -159,7 +184,9 @@ enum CSVPrivacyParser {
                 symbolIndex: symbol,
                 quantityIndex: qty,
                 costBasisIndex: cost,
-                costBasisIsTotal: false
+                costBasisIsTotal: false,
+                purchaseDateIndex: dateIdx,
+                accountTypeIndex: acctIdx
             ))
         }
 
@@ -190,7 +217,19 @@ enum CSVPrivacyParser {
             return nil
         }
         let perShare = columnMap.costBasisIsTotal ? rawCost / quantity : rawCost
-        return LedgerHolding(ticker: symbol, quantity: quantity, costBasis: perShare)
+
+        let purchaseDate = columnMap.purchaseDateIndex
+            .flatMap { row.indices.contains($0) ? parseDate(row[$0]) : nil }
+        let accountType = columnMap.accountTypeIndex
+            .flatMap { row.indices.contains($0) ? row[$0].nonEmptyTrimmed : nil }
+
+        return LedgerHolding(
+            ticker: symbol,
+            quantity: quantity,
+            costBasis: perShare,
+            purchaseDate: purchaseDate,
+            accountType: accountType
+        )
     }
 
     private static func isValidTicker(_ symbol: String) -> Bool {
@@ -308,6 +347,24 @@ private extension CSVPrivacyParser {
         header
             .lowercased()
             .filter { !$0.isWhitespace && $0 != "_" && $0 != "-" && $0 != "/" && $0 != "$" }
+    }
+
+    // Brokerage exports use a handful of date layouts; try the common ones.
+    // All parsed in UTC with a fixed (POSIX) locale so results are stable
+    // regardless of device region. Returns nil for blank/unrecognized values.
+    static func parseDate(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        for format in ["yyyy-MM-dd", "MM/dd/yyyy", "M/d/yyyy", "MM-dd-yyyy"] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(identifier: "UTC")
+            formatter.dateFormat = format
+            if let date = formatter.date(from: trimmed) {
+                return date
+            }
+        }
+        return nil
     }
 
     static func parseDecimal(_ raw: String) -> Double? {

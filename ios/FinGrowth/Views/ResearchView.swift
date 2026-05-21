@@ -413,6 +413,11 @@ struct ResearchView: View {
     private func run() {
         ensureController()
         showSuggestions = false
+        // Drop any link to the previous analysis. persistIfNeeded reassigns
+        // these once the new result is saved; until then the "Test with paper
+        // trade" button must not attach a trade to a stale session.
+        lastPersistedSessionID = nil
+        lastPersistedSessionLinkID = nil
         let request = AnalysisQuery(
             query: query.trimmingCharacters(in: .whitespaces),
             ticker: ticker.trimmingCharacters(in: .whitespaces).uppercased(),

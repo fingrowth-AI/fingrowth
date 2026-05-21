@@ -86,6 +86,46 @@ final class CSVPrivacyParserTests: XCTestCase {
         XCTAssertEqual(byTicker["AMD"]?.quantity, 12)
     }
 
+    // MARK: - Richer ledger fields (design §8.1 Holding)
+
+    func testFidelityCSVCapturesAccountTypeAndPurchaseDate() throws {
+        // Fidelity exports that ship Account Type + Date Acquired should land
+        // in the device-only PrivateLedger, and the brokerage source should be
+        // stamped on the ledger.
+        let csv = """
+        Account Number,Account Name,Account Type,Symbol,Quantity,Average Cost Basis,Date Acquired
+        X1,INDIVIDUAL,Roth IRA,AAPL,10,150,2023-06-15
+        X1,INDIVIDUAL,Roth IRA,MSFT,5,300,03/02/2022
+        """
+        let result = try CSVPrivacyParser.parse(csv: csv)
+
+        XCTAssertEqual(result.format, .fidelity)
+        XCTAssertEqual(result.ledger.sourceBrokerage, "Fidelity")
+
+        let byTicker = Dictionary(uniqueKeysWithValues: result.ledger.holdings.map { ($0.ticker, $0) })
+        XCTAssertEqual(byTicker["AAPL"]?.accountType, "Roth IRA")
+        XCTAssertEqual(byTicker["MSFT"]?.accountType, "Roth IRA")
+
+        // The parser anchors dates to UTC midnight; reconstruct independently.
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let expectedAAPL = utc.date(from: DateComponents(year: 2023, month: 6, day: 15))
+        XCTAssertEqual(byTicker["AAPL"]?.purchaseDate, expectedAAPL)
+        XCTAssertNotNil(byTicker["MSFT"]?.purchaseDate, "M/d/yyyy layout should parse too")
+    }
+
+    func testHoldingsWithoutOptionalColumnsLeaveFieldsNil() throws {
+        let csv = """
+        Symbol,Quantity,Average Cost
+        AMD,3,95
+        """
+        let result = try CSVPrivacyParser.parse(csv: csv)
+        let holding = try XCTUnwrap(result.ledger.holdings.first)
+        XCTAssertNil(holding.accountType)
+        XCTAssertNil(holding.purchaseDate)
+        XCTAssertEqual(result.ledger.sourceBrokerage, "Robinhood")
+    }
+
     // MARK: - ShareableProfile invariants
 
     func testShareableProfileSectorWeightsSumTo100() throws {

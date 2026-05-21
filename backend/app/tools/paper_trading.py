@@ -12,12 +12,18 @@ orders, OCO/OTO, and trailing-stop variants are left to a follow-up.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import httpx
 
 from app.config import settings
-from app.models.trading import Order, Position
+from app.models.trading import (
+    Order,
+    PortfolioHistory,
+    PortfolioHistoryPoint,
+    Position,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -183,3 +189,73 @@ async def get_order_history(
     finally:
         if own_client:
             await client.aclose()
+
+
+# Alpaca accepts a fixed vocabulary for these; we validate up front so a typo
+# becomes a 400 rather than an opaque upstream 422.
+ALLOWED_HISTORY_PERIODS = frozenset(
+    {"1D", "1W", "1M", "3M", "6M", "1A", "2A", "5A", "all"}
+)
+ALLOWED_HISTORY_TIMEFRAMES = frozenset({"1Min", "5Min", "15Min", "1H", "1D"})
+
+
+async def get_portfolio_history(
+    *,
+    period: str = "1M",
+    timeframe: str = "1D",
+    client: httpx.AsyncClient | None = None,
+) -> PortfolioHistory:
+    """Return the account's equity curve from Alpaca's portfolio history.
+
+    Unlike summing current positions, this reflects *realised* outcomes too:
+    when a paper position is closed, its gain/loss is baked into account
+    equity, so the curve never loses a completed trade.
+    """
+    if period not in ALLOWED_HISTORY_PERIODS:
+        raise ValueError(
+            f"period must be one of {sorted(ALLOWED_HISTORY_PERIODS)}, got {period!r}"
+        )
+    if timeframe not in ALLOWED_HISTORY_TIMEFRAMES:
+        raise ValueError(
+            f"timeframe must be one of {sorted(ALLOWED_HISTORY_TIMEFRAMES)}, "
+            f"got {timeframe!r}"
+        )
+    base = _require_paper_endpoint()
+    own_client = client is None
+    client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
+    try:
+        params = {"period": period, "timeframe": timeframe}
+        resp = await client.get(
+            f"{base}/v2/account/portfolio/history",
+            params=params,
+            headers=_auth_headers(),
+        )
+        resp.raise_for_status()
+        return _parse_portfolio_history(resp.json())
+    finally:
+        if own_client:
+            await client.aclose()
+
+
+def _parse_portfolio_history(data: object) -> PortfolioHistory:
+    """Flatten Alpaca's parallel timestamp/equity arrays into typed points.
+
+    Alpaca pads the series with ``null`` (sessions with no data) and ``0.0``
+    equities (days before the account was funded). We drop both so the client
+    never plots a phantom zero or a misleading -100% return at the start.
+    """
+    if not isinstance(data, dict):
+        return PortfolioHistory(base_value=0.0, points=[])
+    timestamps = data.get("timestamp") or []
+    equities = data.get("equity") or []
+    points: list[PortfolioHistoryPoint] = []
+    for ts, eq in zip(timestamps, equities):
+        if eq is None or ts is None or float(eq) <= 0:
+            continue
+        day = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+        points.append(PortfolioHistoryPoint(date=day, equity=float(eq)))
+    base_value = data.get("base_value")
+    return PortfolioHistory(
+        base_value=float(base_value) if base_value is not None else 0.0,
+        points=points,
+    )

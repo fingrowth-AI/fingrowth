@@ -184,9 +184,15 @@ final class APIClient: Sendable {
         while attempt < retryPolicy.maxAttempts {
             attempt += 1
             do {
-                receivedFinal = try await consume(
+                // `onFinal` flips receivedFinal the instant the final_result is
+                // yielded, *before* the stream finishes. If the line stream then
+                // throws (e.g. the connection drops after the final frame but
+                // before a clean close), the flag is already set, so the retry
+                // logic below won't re-run an analysis we've already delivered.
+                try await consume(
                     request: request,
-                    continuation: continuation
+                    continuation: continuation,
+                    onFinal: { receivedFinal = true }
                 )
                 continuation.finish()
                 return
@@ -232,22 +238,22 @@ final class APIClient: Sendable {
 
     private func consume(
         request: URLRequest,
-        continuation: AsyncThrowingStream<AnalysisEvent, Error>.Continuation
-    ) async throws -> Bool {
+        continuation: AsyncThrowingStream<AnalysisEvent, Error>.Continuation,
+        onFinal: () -> Void
+    ) async throws {
         let (lines, response) = try await transport.lineStream(for: request)
         guard (200..<300).contains(response.statusCode) else {
             throw APIClientError.requestFailed(statusCode: response.statusCode)
         }
 
         var parser = SSEParser()
-        var sawFinal = false
         for try await line in lines {
             try Task.checkCancellation()
             guard let frame = parser.consume(line: line) else { continue }
             let event = try decodeEvent(frame: frame)
             continuation.yield(event)
             if case .finalResult = event {
-                sawFinal = true
+                onFinal()
             }
         }
         // Server may close the connection without a trailing blank line; flush.
@@ -255,10 +261,9 @@ final class APIClient: Sendable {
             let event = try decodeEvent(frame: frame)
             continuation.yield(event)
             if case .finalResult = event {
-                sawFinal = true
+                onFinal()
             }
         }
-        return sawFinal
     }
 
     private func buildRequest(

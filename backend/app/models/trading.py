@@ -43,3 +43,24 @@ class Position(BaseModel):
     market_value: float | None = None
     cost_basis: float | None = None
     unrealized_pl: float | None = None
+
+
+class PortfolioHistoryPoint(BaseModel):
+    """One equity sample on the account's value-over-time curve."""
+
+    date: str  # ISO yyyy-mm-dd, derived from Alpaca's unix timestamp
+    equity: float
+
+
+class PortfolioHistory(BaseModel):
+    """Account equity over time, powering the Performance tracker (P4-04).
+
+    Alpaca returns parallel ``timestamp`` / ``equity`` arrays plus a
+    ``base_value`` (account equity at the start of the window). We flatten that
+    into ``points`` and keep ``base_value`` so the client can express each
+    point as a cumulative return without depending on locally-captured
+    snapshots — closed-position outcomes are already realised into equity.
+    """
+
+    base_value: float
+    points: list[PortfolioHistoryPoint]

@@ -20,8 +20,6 @@ struct PortfolioView: View {
     private var importedLedgers: [PrivateLedger]
     @Query(sort: \PaperTradeRecord.submittedAt, order: .reverse)
     private var paperTrades: [PaperTradeRecord]
-    @Query(sort: \PortfolioSnapshot.capturedDay, order: .forward)
-    private var snapshots: [PortfolioSnapshot]
 
     @State private var section: PortfolioSection = .holdings
     @State private var showOrderForm: Bool = false
@@ -72,8 +70,7 @@ struct PortfolioView: View {
                     case .performance:
                         PerformanceSection(
                             store: store,
-                            paperTrades: paperTrades,
-                            snapshots: snapshots
+                            paperTrades: paperTrades
                         )
                     }
                 }
@@ -268,6 +265,14 @@ private struct LedgerRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(ledger.accountName).font(.subheadline.weight(.semibold))
+                if let brokerage = ledger.sourceBrokerage, !brokerage.isEmpty {
+                    Text(brokerage)
+                        .font(.caption2.weight(.medium))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.15))
+                        .clipShape(Capsule())
+                }
                 Spacer()
                 Text("Imported \(ledger.importedAt, style: .date)")
                     .font(.caption2)
@@ -280,7 +285,14 @@ private struct LedgerRow: View {
             } else {
                 ForEach(ledger.holdings.sorted(by: { $0.ticker < $1.ticker })) { holding in
                     HStack(alignment: .firstTextBaseline) {
-                        Text(holding.ticker).font(.subheadline)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(holding.ticker).font(.subheadline)
+                            if let detail = holdingDetail(holding) {
+                                Text(detail)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Spacer()
                         Text("\(qtyString(holding.quantity)) @ \(formatPrice(holding.costBasis))")
                             .font(.caption.monospacedDigit())
@@ -290,6 +302,19 @@ private struct LedgerRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    // Account type + acquisition date when the brokerage export shipped them
+    // (design §8.1 Holding). Both are device-only PrivateLedger detail.
+    private func holdingDetail(_ holding: LedgerHolding) -> String? {
+        var parts: [String] = []
+        if let accountType = holding.accountType, !accountType.isEmpty {
+            parts.append(accountType)
+        }
+        if let purchaseDate = holding.purchaseDate {
+            parts.append("acq. " + purchaseDate.formatted(date: .abbreviated, time: .omitted))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func qtyString(_ qty: Double) -> String {
@@ -445,7 +470,6 @@ private struct BrokerOrderRow: View {
 private struct PerformanceSection: View {
     let store: PortfolioStore
     let paperTrades: [PaperTradeRecord]
-    let snapshots: [PortfolioSnapshot]
 
     var body: some View {
         List {
@@ -512,28 +536,35 @@ private struct PerformanceSection: View {
         }
     }
 
-    // Builds the chart from *measured* daily snapshots — each point is the
-    // portfolio's actual (value − cost)/cost return on the day it was
-    // captured, so we never project today's value onto a past date. The SPY
-    // line is normalized to its close on/after the first snapshot date so both
-    // series start at 0% on the same baseline and are visually comparable.
+    // Builds the chart from Alpaca's server-backed portfolio history: each
+    // point is account *equity*, which already folds in realized P/L from
+    // closed positions, so a completed trade never drops off the curve. Equity
+    // is expressed as a cumulative return against the window's base value. The
+    // SPY line is normalized to its close on/after the portfolio's first date
+    // so both series start at 0% on the same baseline.
     private var chartData: PerformanceSeries? {
-        let portfolioCurve: [(date: Date, returnPct: Double)] = snapshots.compactMap {
-            guard let pct = $0.returnPct else { return nil }
-            return ($0.capturedDay, pct)
+        guard let history = store.portfolioHistory, !history.points.isEmpty else { return nil }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate]
+
+        let datedEquity: [(date: Date, equity: Double)] = history.points.compactMap { p in
+            guard let date = formatter.date(from: p.date) else { return nil }
+            return (date, p.equity)
         }
-        guard let baselineDate = portfolioCurve.first?.date else { return nil }
+        guard let baselineDate = datedEquity.first?.date else { return nil }
+        // Prefer Alpaca's reported base_value; fall back to the first equity
+        // sample if it's missing/zero.
+        let baseEquity = history.baseValue > 0 ? history.baseValue : datedEquity.first?.equity ?? 0
+        guard baseEquity > 0 else { return nil }
+        let portfolioCurve = datedEquity.map { ($0.date, ($0.equity / baseEquity - 1) * 100) }
 
         var benchPoints: [(date: Date, returnPct: Double)] = []
         if let benchmark = store.benchmark, !benchmark.points.isEmpty {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withFullDate]
             let dated: [(Date, Double)] = benchmark.points.compactMap { p in
                 guard let date = formatter.date(from: p.date) else { return nil }
                 return (date, p.close)
             }
-            // Baseline = first benchmark close on/after the portfolio's first
-            // snapshot date, so both lines share a common 0% origin.
             if let baseline = dated.first(where: { $0.0 >= baselineDate })?.1 ?? dated.last?.1,
                baseline > 0 {
                 benchPoints = dated
@@ -546,10 +577,10 @@ private struct PerformanceSection: View {
 
     private var emptyChartMessage: String {
         if case .failed(let message) = store.loadState { return message }
-        if store.positions.isEmpty && snapshots.isEmpty {
-            return "Hold a paper position and refresh to start tracking performance."
+        if store.portfolioHistory == nil {
+            return "Performance history is momentarily unavailable. Pull to refresh to try again."
         }
-        return "Refresh to capture today's portfolio value. The return curve builds up one point per day."
+        return "Place a paper trade and your account equity vs SPY will appear here."
     }
 
     private var totalMarketValue: Double? {

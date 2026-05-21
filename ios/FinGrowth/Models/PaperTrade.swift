@@ -41,6 +41,20 @@ struct BenchmarkSeries: Codable, Sendable, Equatable {
     var points: [BenchmarkPoint]
 }
 
+// Account equity over time from /api/v1/paper/portfolio-history. Drives the
+// Performance tracker (P4-04): because equity already folds in realised P/L
+// from closed positions, the curve never loses a completed trade the way a
+// sum-of-open-positions snapshot did.
+struct PortfolioHistoryPoint: Codable, Sendable, Equatable, Hashable {
+    var date: String  // yyyy-mm-dd
+    var equity: Double
+}
+
+struct PortfolioHistorySeries: Codable, Sendable, Equatable {
+    var baseValue: Double
+    var points: [PortfolioHistoryPoint]
+}
+
 // MARK: - SwiftData record
 
 // Local record of a paper trade *we* placed, with the link back to the
@@ -97,30 +111,5 @@ final class PaperTradeRecord {
 
     var sourceAnalysisType: AnalysisType {
         AnalysisType(rawValue: sourceAnalysisTypeRaw) ?? .general
-    }
-}
-
-// One measured point on the portfolio's value curve. Persisted once per day on
-// refresh so the Performance tracker can plot a *real* return-over-time series
-// (value vs cost basis at each captured date) rather than projecting today's
-// market value onto past dates. ``capturedDay`` is the start-of-day so we can
-// dedupe to one snapshot per calendar day.
-@Model
-final class PortfolioSnapshot {
-    @Attribute(.unique) var capturedDay: Date
-    var marketValue: Double
-    var costBasis: Double
-
-    init(capturedDay: Date, marketValue: Double, costBasis: Double) {
-        self.capturedDay = capturedDay
-        self.marketValue = marketValue
-        self.costBasis = costBasis
-    }
-
-    // Cumulative return as a percentage; nil when cost basis is zero (no
-    // positions held), since 0/0 return is undefined rather than 0%.
-    var returnPct: Double? {
-        guard costBasis > 0 else { return nil }
-        return (marketValue / costBasis - 1) * 100
     }
 }

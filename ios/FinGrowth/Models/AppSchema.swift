@@ -152,6 +152,65 @@ enum AppSchemaV2: VersionedSchema {
         ]
     }
 
+    // V2 shapes of the imported-portfolio models, pinned so V3 can add fields
+    // (purchaseDate, accountType, sourceBrokerage) and drop PortfolioSnapshot
+    // without corrupting the on-disk description of an existing V2 store. The
+    // live types in PrivateLedger.swift are the *current* (V3) shapes.
+    @Model
+    final class PrivateLedger {
+        @Attribute(.unique) var id: UUID
+        var accountName: String
+        var importedAt: Date
+        var rawCSVDigest: String
+        @Relationship(deleteRule: .cascade, inverse: \LedgerHolding.ledger)
+        var holdings: [LedgerHolding]
+
+        init(
+            id: UUID = UUID(),
+            accountName: String,
+            importedAt: Date = .now,
+            rawCSVDigest: String = "",
+            holdings: [LedgerHolding] = []
+        ) {
+            self.id = id
+            self.accountName = accountName
+            self.importedAt = importedAt
+            self.rawCSVDigest = rawCSVDigest
+            self.holdings = holdings
+        }
+    }
+
+    @Model
+    final class LedgerHolding {
+        var ticker: String
+        var quantity: Double
+        var costBasis: Double
+        var ledger: PrivateLedger?
+
+        init(ticker: String, quantity: Double, costBasis: Double, ledger: PrivateLedger? = nil) {
+            self.ticker = ticker
+            self.quantity = quantity
+            self.costBasis = costBasis
+            self.ledger = ledger
+        }
+    }
+
+    // Dropped entirely in V3 (the Performance tracker now reads server-backed
+    // Alpaca portfolio history instead of locally-captured snapshots), but
+    // pinned here so a V2 → V3 migration knows the table to drop.
+    @Model
+    final class PortfolioSnapshot {
+        @Attribute(.unique) var capturedDay: Date
+        var marketValue: Double
+        var costBasis: Double
+
+        init(capturedDay: Date, marketValue: Double, costBasis: Double) {
+            self.capturedDay = capturedDay
+            self.marketValue = marketValue
+            self.costBasis = costBasis
+        }
+    }
+
     // Adds sessionID (the cross-model link to
     // PaperTradeRecord.sourceResearchSessionID). sessionID is intentionally
     // *not* @Attribute(.unique): SwiftData applies the column's literal
@@ -207,16 +266,48 @@ enum AppSchemaV2: VersionedSchema {
 
 typealias ResearchHistoryEntry = AppSchemaV2.ResearchHistoryEntry
 
+// MARK: - V3 (P4-05 ledger fields + portfolio-history performance)
+
+// V3 evolves the imported-portfolio models and retires PortfolioSnapshot:
+//   * LedgerHolding gains purchaseDate / accountType (design §8.1 Holding).
+//   * PrivateLedger gains sourceBrokerage (brokerage/source metadata).
+//   * PortfolioSnapshot is removed — the Performance tracker now plots
+//     server-backed Alpaca portfolio history (realised + unrealised equity).
+// The current shapes live in PrivateLedger.swift, so V3 references the live
+// types directly. All deltas are additive-optional or entity removal, so the
+// V2 → V3 stage is lightweight.
+enum AppSchemaV3: VersionedSchema {
+    static let versionIdentifier = Schema.Version(3, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            PrivateLedger.self,
+            LedgerHolding.self,
+            ShareableProfile.self,
+            AuditEntry.self,
+            ResearchHistoryEntry.self,
+            PaperTradeRecord.self,
+        ]
+    }
+}
+
 // MARK: - Migration plan
 
 enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self, AppSchemaV2.self]
+        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2]
+        [migrateV1toV2, migrateV2toV3]
     }
+
+    // Additive optional columns plus a dropped PortfolioSnapshot table —
+    // SwiftData handles both without custom row work.
+    static let migrateV2toV3 = MigrationStage.lightweight(
+        fromVersion: AppSchemaV2.self,
+        toVersion: AppSchemaV3.self
+    )
 
     static let migrateV1toV2 = MigrationStage.custom(
         fromVersion: AppSchemaV1.self,

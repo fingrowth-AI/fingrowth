@@ -29,7 +29,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.models.trading import Order, Position
+from app.models.trading import Order, PortfolioHistory, Position
 from app.tools.market_data import (
     MarketDataError,
     MissingAPIKeyError,
@@ -41,6 +41,7 @@ from app.tools.paper_trading import (
     LiveEndpointError,
     MissingCredentialsError,
     get_order_history,
+    get_portfolio_history,
     get_positions,
     place_paper_order,
 )
@@ -167,6 +168,23 @@ async def list_orders(limit: int = 50, status: str = "all") -> OrdersResponse:
         return OrdersResponse(orders=await get_order_history(limit=limit, status=status))
     except Exception as exc:
         logger.exception("get_order_history failed")
+        raise _map_client_error(exc) from exc
+
+
+@router.get("/portfolio-history", response_model=PortfolioHistory)
+async def portfolio_history(
+    period: str = "1M", timeframe: str = "1D"
+) -> PortfolioHistory:
+    """Account equity over time for the Performance tracker.
+
+    Server-backfilled by Alpaca, so the curve covers the full window — not
+    just the days the app happened to refresh — and includes realised P/L
+    from closed positions. Invalid period/timeframe values surface as 400.
+    """
+    try:
+        return await get_portfolio_history(period=period, timeframe=timeframe)
+    except Exception as exc:
+        logger.exception("get_portfolio_history failed")
         raise _map_client_error(exc) from exc
 
 

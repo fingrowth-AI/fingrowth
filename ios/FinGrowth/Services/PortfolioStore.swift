@@ -21,6 +21,7 @@ final class PortfolioStore {
     private(set) var positions: [BrokerPosition] = []
     private(set) var orders: [BrokerOrder] = []
     private(set) var benchmark: BenchmarkSeries?
+    private(set) var portfolioHistory: PortfolioHistorySeries?
     private(set) var loadState: LoadState = .idle
     private(set) var lastRefreshedAt: Date?
     var submitError: String?
@@ -50,7 +51,6 @@ final class PortfolioStore {
             positions = pos
             orders = ord
             reconcileLocalRecords(with: ord)
-            captureSnapshot(from: pos)
             lastRefreshedAt = Date()
             loadState = .loaded
         } catch let error as PaperTradingClientError {
@@ -60,12 +60,18 @@ final class PortfolioStore {
             loadState = .failed(message: error.localizedDescription)
             return
         }
+        // Performance inputs are best-effort: Alpha Vantage rate-limits the
+        // benchmark aggressively, and a portfolio-history hiccup shouldn't take
+        // down Holdings/Orders. Each falls back to its own empty state.
         do {
             benchmark = try await client.benchmark(symbol: "SPY", days: benchmarkDays)
         } catch {
-            // Leave loadState = .loaded; the Performance sub-view surfaces a
-            // softer "benchmark unavailable" message via its empty state.
             benchmark = nil
+        }
+        do {
+            portfolioHistory = try await client.portfolioHistory(period: "1M", timeframe: "1D")
+        } catch {
+            portfolioHistory = nil
         }
     }
 
@@ -90,29 +96,6 @@ final class PortfolioStore {
             }
         }
         if dirty { try? context.save() }
-    }
-
-    // Persist one snapshot per calendar day. Replaces an existing same-day
-    // snapshot so repeated refreshes don't accumulate duplicate points and the
-    // latest intraday value wins.
-    private func captureSnapshot(from positions: [BrokerPosition]) {
-        let marketValue = positions.compactMap(\.marketValue).reduce(0, +)
-        let costBasis = positions.compactMap(\.costBasis).reduce(0, +)
-        let day = Calendar.current.startOfDay(for: Date())
-        let descriptor = FetchDescriptor<PortfolioSnapshot>(
-            predicate: #Predicate { $0.capturedDay == day }
-        )
-        if let existing = (try? context.fetch(descriptor))?.first {
-            existing.marketValue = marketValue
-            existing.costBasis = costBasis
-        } else {
-            context.insert(PortfolioSnapshot(
-                capturedDay: day,
-                marketValue: marketValue,
-                costBasis: costBasis
-            ))
-        }
-        try? context.save()
     }
 
     // MARK: - Place a paper trade
