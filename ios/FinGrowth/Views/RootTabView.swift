@@ -4,6 +4,7 @@ struct RootTabView: View {
     @Bindable var settings: AppSettings
     let apiClient: APIClient
     @State private var selection: RootTab = .research
+    @State private var paperTradePrefill = PaperTradePrefill()
 
     var body: some View {
         TabView(selection: $selection) {
@@ -19,9 +20,13 @@ struct RootTabView: View {
     private func view(for tab: RootTab) -> some View {
         switch tab {
         case .research:
-            ResearchView(apiClient: apiClient)
+            ResearchView(
+                apiClient: apiClient,
+                paperTradePrefill: paperTradePrefill,
+                onSwitchToPortfolio: { selection = .portfolio }
+            )
         case .portfolio:
-            PortfolioView()
+            PortfolioView(paperTradePrefill: paperTradePrefill)
         case .privacy:
             PrivacyView()
         case .settings:

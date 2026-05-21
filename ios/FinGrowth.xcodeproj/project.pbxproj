@@ -37,6 +37,9 @@
 		DC932C77BA806F005036800B /* QueryRewriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E739B4C1D34CA02A016D03A /* QueryRewriterTests.swift */; };
 		E71F23B31CCCD52CA4BA191C /* AnalysisAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21182A4D3B5EB8B0761D7D2 /* AnalysisAPI.swift */; };
 		EA762041EAE594693C5B7818 /* AppShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F031E428CF3CEB5CB565941 /* AppShellTests.swift */; };
+		AAAA0002AAAA0002AAAA0002 /* ResearchHistoryEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA0001AAAA0001AAAA0001 /* ResearchHistoryEntry.swift */; };
+		BBBB0002BBBB0002BBBB0002 /* TickerCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB0001BBBB0001BBBB0001 /* TickerCatalog.swift */; };
+		CCCC0002CCCC0002CCCC0002 /* PaperTradePrefill.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC0001CCCC0001CCCC0001 /* PaperTradePrefill.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -82,6 +85,9 @@
 		E640E6EECDD28A3251E83C82 /* DifferentialPrivacyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DifferentialPrivacyTests.swift; sourceTree = "<group>"; };
 		E79FE88A3DA6BDB5D94114ED /* FinGrowth.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FinGrowth.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F21182A4D3B5EB8B0761D7D2 /* AnalysisAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisAPI.swift; sourceTree = "<group>"; };
+		AAAA0001AAAA0001AAAA0001 /* ResearchHistoryEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchHistoryEntry.swift; sourceTree = "<group>"; };
+		BBBB0001BBBB0001BBBB0001 /* TickerCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TickerCatalog.swift; sourceTree = "<group>"; };
+		CCCC0001CCCC0001CCCC0001 /* PaperTradePrefill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTradePrefill.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -92,6 +98,7 @@
 				8BE7EC5B62AD41CA20D3F1EE /* AuditEntry.swift */,
 				C5FC323C7511F1088A1C015E /* JSONValue.swift */,
 				198A6B6B9353E870FAB7CEE7 /* PrivateLedger.swift */,
+				AAAA0001AAAA0001AAAA0001 /* ResearchHistoryEntry.swift */,
 				D925F43446D8B6B05C1BE8F1 /* ShareableProfile.swift */,
 			);
 			path = Models;
@@ -164,9 +171,11 @@
 				089AB79048AEAEF9E5813D21 /* CSVPrivacyParser.swift */,
 				4DE69FBE300A997A0AB294EA /* DifferentialPrivacy.swift */,
 				21234ACAF306DFF1BCE8E8C9 /* GemmaService.swift */,
+				CCCC0001CCCC0001CCCC0001 /* PaperTradePrefill.swift */,
 				56CA8FBD5A4D2A5F43978972 /* PrivacyAuditLog.swift */,
 				D86C2BFD2F205263C068D0D1 /* QueryRewriter.swift */,
 				06C4B2465AD9E4584A96CF25 /* ThermalMonitor.swift */,
+				BBBB0001BBBB0001BBBB0001 /* TickerCatalog.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -284,6 +293,9 @@
 				1BCA8756365F01D7CA078B45 /* PrivacyView.swift in Sources */,
 				A2DF56727501261594A1D602 /* PrivateLedger.swift in Sources */,
 				20FF285108A9C8253B38A70D /* QueryRewriter.swift in Sources */,
+				CCCC0002CCCC0002CCCC0002 /* PaperTradePrefill.swift in Sources */,
+				AAAA0002AAAA0002AAAA0002 /* ResearchHistoryEntry.swift in Sources */,
+				BBBB0002BBBB0002BBBB0002 /* TickerCatalog.swift in Sources */,
 				2732289B772D2DB199C88F99 /* ResearchView.swift in Sources */,
 				5D0D9E39322421A7CE8BAAAC /* RootTab.swift in Sources */,
 				294DB2355A46113258B1D3C1 /* RootTabView.swift in Sources */,

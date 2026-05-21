@@ -18,7 +18,10 @@ final class AppShellTests: XCTestCase {
     func testSchemaIncludesAllPersistentModels() {
         let schema = AppContainer.makeSchema()
         let entityNames = Set(schema.entities.map(\.name))
-        XCTAssertEqual(entityNames, ["PrivateLedger", "ShareableProfile", "AuditEntry"])
+        XCTAssertEqual(
+            entityNames,
+            ["PrivateLedger", "ShareableProfile", "AuditEntry", "ResearchHistoryEntry"]
+        )
     }
 
     // MARK: - RootTab (Tabs switch correctly)

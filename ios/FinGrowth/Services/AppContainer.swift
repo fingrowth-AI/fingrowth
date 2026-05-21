@@ -7,6 +7,7 @@ enum AppContainer {
             PrivateLedger.self,
             ShareableProfile.self,
             AuditEntry.self,
+            ResearchHistoryEntry.self,
         ])
     }
 

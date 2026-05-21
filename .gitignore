@@ -22,6 +22,16 @@ CLAUDE.local.md
 **/CLAUDE.local.md
 .mcp.json
 
+# Codex local overrides and secrets
+.codex/
+.agents/
+AGENTS.md
+**/AGENTS.md
+.codex/config.local.toml
+.codex/*.local.toml
+.codex/secrets*
+.agents/**/*.local.*
+
 # Design doc (Word → Markdown export); explicit + generic patterns
 /AI_Investment_Strategist_Design_Doc_v2.1.docx.md
 *.docx
