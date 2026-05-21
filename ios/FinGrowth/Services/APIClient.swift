@@ -325,8 +325,44 @@ final class APIClient: Sendable {
         } catch let error as APIClientError {
             throw error
         } catch {
-            throw APIClientError.invalidEvent(detail: error.localizedDescription)
+            throw APIClientError.invalidEvent(
+                detail: Self.decodeFailureDetail(
+                    event: frame.event,
+                    data: frame.data,
+                    error: error
+                )
+            )
         }
+    }
+
+    private static func decodeFailureDetail(
+        event: String,
+        data: String,
+        error: Error
+    ) -> String {
+        let prefix = String(data.prefix(220))
+        return "\(event): \(describeDecodeError(error)). Payload starts: \(prefix)"
+    }
+
+    private static func describeDecodeError(_ error: Error) -> String {
+        func path(_ keys: [CodingKey]) -> String {
+            let value = keys.map(\.stringValue).joined(separator: ".")
+            return value.isEmpty ? "<root>" : value
+        }
+
+        if case DecodingError.keyNotFound(let key, let context) = error {
+            return "missing key '\(key.stringValue)' at \(path(context.codingPath))"
+        }
+        if case DecodingError.typeMismatch(let type, let context) = error {
+            return "expected \(type) at \(path(context.codingPath)): \(context.debugDescription)"
+        }
+        if case DecodingError.valueNotFound(let type, let context) = error {
+            return "missing \(type) value at \(path(context.codingPath)): \(context.debugDescription)"
+        }
+        if case DecodingError.dataCorrupted(let context) = error {
+            return "corrupt data at \(path(context.codingPath)): \(context.debugDescription)"
+        }
+        return error.localizedDescription
     }
 
     private func isRetryable(_ error: Error) -> Bool {
@@ -428,6 +464,12 @@ struct SSEParser {
 
         switch field {
         case "event":
+            if hasContent {
+                let frame = flush()
+                event = value
+                hasContent = true
+                return frame
+            }
             event = value
             hasContent = true
         case "data":

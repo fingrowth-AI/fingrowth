@@ -66,6 +66,23 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(frame, SSEFrame(event: "final_result", data: "{}"))
     }
 
+    func testParserFlushesPreviousFrameWhenNextEventStarts() {
+        var parser = SSEParser()
+        XCTAssertNil(parser.consume(line: "event: progress"))
+        XCTAssertNil(parser.consume(line: "data: {\"stage\": \"researching\"}"))
+        let progress = parser.consume(line: "event: partial_result")
+        XCTAssertEqual(progress, SSEFrame(event: "progress", data: "{\"stage\": \"researching\"}"))
+        XCTAssertNil(parser.consume(line: "data: {\"stage\": \"research\", \"research\": {\"filings\": [], \"news\": []}}"))
+        let partial = parser.consume(line: "event: final_result")
+        XCTAssertEqual(
+            partial,
+            SSEFrame(
+                event: "partial_result",
+                data: "{\"stage\": \"research\", \"research\": {\"filings\": [], \"news\": []}}"
+            )
+        )
+    }
+
     // MARK: - streamAnalysis happy path
 
     func testStreamAnalysisYieldsProgressPartialAndFinalEvents() async throws {
@@ -215,6 +232,28 @@ final class APIClientTests: XCTestCase {
                 (apiError.errorDescription ?? "").contains("Settings"),
                 "user-facing message should mention Settings"
             )
+        }
+    }
+
+    func testInvalidEventErrorIncludesEventPayloadAndCodingPath() async {
+        let lines = [
+            "event: partial_result",
+            "data: {\"stage\": \"analysis\", \"analysis\": {\"technical\": {}, \"confidence\": 42}}",
+            "",
+        ]
+        let client = makeClient(transport: MockSSETransport(lines: lines), retryPolicy: .none)
+
+        await XCTAssertThrowsErrorAsync(
+            for: client.streamAnalysis(query: sampleQuery())
+        ) { error in
+            guard let apiError = error as? APIClientError,
+                  case .invalidEvent(let detail) = apiError
+            else {
+                return XCTFail("expected invalidEvent, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("partial_result"), "got \(detail)")
+            XCTAssertTrue(detail.contains("analysis.confidence"), "got \(detail)")
+            XCTAssertTrue(detail.contains("Payload starts"), "got \(detail)")
         }
     }
 
