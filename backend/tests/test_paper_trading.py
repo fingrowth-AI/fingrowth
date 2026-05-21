@@ -192,6 +192,29 @@ async def test_place_paper_order_refuses_empty_base_url(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "hostile_url",
+    [
+        "https://paper-api.alpaca.markets.evil.com",
+        "https://paper-api.alpaca.markets.evil.com/v2",
+        "https://evil.com/paper-api.alpaca.markets",
+        "https://user:paper-api.alpaca.markets@evil.com",
+        "ftp://paper-api.alpaca.markets",
+    ],
+)
+async def test_place_paper_order_refuses_lookalike_hosts(monkeypatch, hostile_url):
+    """Safety: substring matches must not satisfy the paper-only guard."""
+    monkeypatch.setattr(settings, "alpaca_base_url", hostile_url)
+
+    def handler(req: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("network must not be touched on look-alike host")
+
+    async with _make_client(handler) as client:
+        with pytest.raises(LiveEndpointError):
+            await place_paper_order("AAPL", 10, "buy", client=client)
+
+
+@pytest.mark.asyncio
 async def test_place_paper_order_missing_credentials(monkeypatch):
     monkeypatch.setattr(settings, "alpaca_secret_key", "")
 

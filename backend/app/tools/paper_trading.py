@@ -12,6 +12,8 @@ orders, OCO/OTO, and trailing-stop variants are left to a follow-up.
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import httpx
 
 from app.config import settings
@@ -58,12 +60,18 @@ def _require_paper_endpoint() -> str:
     Alpaca's docs are inconsistent about whether ``/v2`` belongs in the base
     URL or the path; we accept either by stripping a trailing ``/v2`` so our
     callers can always append ``/v2/<resource>``.
+
+    The paper-only guard parses the URL and requires the host to be *exactly*
+    the paper domain. A substring check would accept a hostile look-alike such
+    as ``paper-api.alpaca.markets.evil.com`` or ``paper-api.alpaca.markets``
+    embedded in a path/userinfo segment.
     """
     base = (settings.alpaca_base_url or "").rstrip("/")
-    if PAPER_DOMAIN not in base:
+    parsed = urlparse(base)
+    if parsed.scheme not in ("http", "https") or parsed.hostname != PAPER_DOMAIN:
         raise LiveEndpointError(
             f"refusing to call non-paper endpoint: {base!r}; "
-            f"ALPACA_BASE_URL must reference {PAPER_DOMAIN}"
+            f"ALPACA_BASE_URL host must be exactly {PAPER_DOMAIN}"
         )
     if base.endswith("/v2"):
         base = base[: -len("/v2")]

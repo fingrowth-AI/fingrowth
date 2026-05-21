@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.routers import analysis, health
+from app.routers import analysis, health, paper_trading
 
 app = FastAPI(
     title="FinGrowth API",
@@ -13,3 +13,4 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(analysis.router, prefix="/api/v1")
+app.include_router(paper_trading.router, prefix="/api/v1")
