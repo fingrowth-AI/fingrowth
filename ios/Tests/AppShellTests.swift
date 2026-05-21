@@ -32,6 +32,49 @@ final class AppShellTests: XCTestCase {
         )
     }
 
+    // P4-04 migration regression: opening a V1 (P4-03) store against the
+    // current schema previously crashed because SwiftData added the new
+    // sessionID column with one literal UUID default, instantly violating
+    // the unique attribute. AppMigrationPlan.migrateV1toV2 backfills a
+    // distinct UUID per legacy row in didMigrate.
+    func testMigrationFromV1AssignsDistinctSessionIDs() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let storeURL = tempDir.appending(path: "v1-seed.sqlite")
+
+        try autoreleasepool {
+            let v1Schema = Schema(versionedSchema: AppSchemaV1.self)
+            let v1Config = ModelConfiguration(schema: v1Schema, url: storeURL, cloudKitDatabase: .none)
+            let v1Container = try ModelContainer(for: v1Schema, configurations: v1Config)
+            let v1Context = ModelContext(v1Container)
+            for ticker in ["AAPL", "MSFT", "GOOG"] {
+                v1Context.insert(
+                    AppSchemaV1.ResearchHistoryEntry(
+                        createdAt: .now,
+                        ticker: ticker,
+                        query: "why \(ticker)",
+                        analysisTypeRaw: "general",
+                        narrative: "",
+                        confidence: "low",
+                        disclaimer: "",
+                        indicatorsJSON: Data("{}".utf8),
+                        riskFlagsJSON: Data("[]".utf8),
+                        riskApproved: true,
+                        riskModifiedResponse: ""
+                    )
+                )
+            }
+            try v1Context.save()
+        }
+
+        let migrated = try AppContainer.makeContainer(storeURL: storeURL)
+        let context = ModelContext(migrated)
+        let entries = try context.fetch(FetchDescriptor<ResearchHistoryEntry>())
+        XCTAssertEqual(entries.count, 3, "all V1 rows should survive migration")
+        let sessionIDs = Set(entries.map(\.sessionID))
+        XCTAssertEqual(sessionIDs.count, entries.count, "each migrated row should get a unique sessionID")
+    }
+
     // MARK: - RootTab (Tabs switch correctly)
 
     func testRootTabsAreInExpectedOrder() {
