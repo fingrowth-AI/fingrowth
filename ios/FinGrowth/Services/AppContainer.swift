@@ -5,9 +5,12 @@ enum AppContainer {
     static func makeSchema() -> Schema {
         Schema([
             PrivateLedger.self,
+            LedgerHolding.self,
             ShareableProfile.self,
             AuditEntry.self,
             ResearchHistoryEntry.self,
+            PaperTradeRecord.self,
+            PortfolioSnapshot.self,
         ])
     }
 

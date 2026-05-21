@@ -20,7 +20,15 @@ final class AppShellTests: XCTestCase {
         let entityNames = Set(schema.entities.map(\.name))
         XCTAssertEqual(
             entityNames,
-            ["PrivateLedger", "ShareableProfile", "AuditEntry", "ResearchHistoryEntry"]
+            [
+                "PrivateLedger",
+                "ShareableProfile",
+                "AuditEntry",
+                "ResearchHistoryEntry",
+                "PaperTradeRecord",
+                "PortfolioSnapshot",
+                "LedgerHolding",
+            ]
         )
     }
 

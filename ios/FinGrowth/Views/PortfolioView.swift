@@ -1,21 +1,508 @@
 import SwiftUI
+import SwiftData
+import Charts
 
-// Stopgap Portfolio surface until P4-04 lands the full Holdings / Performance
-// split. For P4-03 we need a placeholder order form that "Test with paper
-// trade" can populate so the acceptance criterion ("'Test with paper trade'
-// pre-fills order form with relevant ticker") is verifiable end-to-end.
+// Portfolio tab (P4-04). Three sub-views via a segmented picker:
+//   - Holdings: imported PrivateLedger rows + remote paper positions
+//   - Orders:   paper trade history with link back to the source analysis
+//   - Performance: cumulative paper-trade return vs SPY benchmark
+//
+// `PortfolioStore` owns remote fetches and local persistence of placed
+// trades. This file is presentation only.
+
 struct PortfolioView: View {
+    let store: PortfolioStore
     let paperTradePrefill: PaperTradePrefill
 
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \PrivateLedger.importedAt, order: .reverse)
+    private var importedLedgers: [PrivateLedger]
+    @Query(sort: \PaperTradeRecord.submittedAt, order: .reverse)
+    private var paperTrades: [PaperTradeRecord]
+    @Query(sort: \PortfolioSnapshot.capturedDay, order: .forward)
+    private var snapshots: [PortfolioSnapshot]
+
+    @State private var section: PortfolioSection = .holdings
+    @State private var showOrderForm: Bool = false
+    @State private var selectedTradeForAnalysis: PaperTradeRecord?
+
+    enum PortfolioSection: String, CaseIterable, Identifiable {
+        case holdings, orders, performance
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .holdings: "Holdings"
+            case .orders: "Orders"
+            case .performance: "Performance"
+            }
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("Section", selection: $section) {
+                    ForEach(PortfolioSection.allCases) { section in
+                        Text(section.title).tag(section)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+                Group {
+                    switch section {
+                    case .holdings:
+                        HoldingsSection(
+                            store: store,
+                            importedLedgers: importedLedgers
+                        )
+                    case .orders:
+                        OrdersSection(
+                            store: store,
+                            paperTrades: paperTrades,
+                            onTapAnalysis: { selectedTradeForAnalysis = $0 }
+                        )
+                    case .performance:
+                        PerformanceSection(
+                            store: store,
+                            paperTrades: paperTrades,
+                            snapshots: snapshots
+                        )
+                    }
+                }
+            }
+            .navigationTitle("Portfolio")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showOrderForm = true } label: {
+                        Label("New paper trade", systemImage: "plus.circle.fill")
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        Task { await store.refresh() }
+                    } label: {
+                        if store.isLoading {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(store.isLoading)
+                }
+            }
+            .task {
+                if case .idle = store.loadState {
+                    await store.refresh()
+                }
+            }
+            .onChange(of: paperTradePrefill.pending) { _, pending in
+                if pending != nil { showOrderForm = true }
+            }
+            .sheet(isPresented: $showOrderForm) {
+                PaperTradeOrderSheet(
+                    store: store,
+                    paperTradePrefill: paperTradePrefill
+                )
+            }
+            .sheet(item: $selectedTradeForAnalysis) { trade in
+                LinkedAnalysisSheet(trade: trade, modelContext: modelContext)
+            }
+        }
+    }
+}
+
+// MARK: - Holdings
+
+private struct HoldingsSection: View {
+    let store: PortfolioStore
+    let importedLedgers: [PrivateLedger]
+
+    var body: some View {
+        List {
+            Section("Paper positions") {
+                if store.positions.isEmpty {
+                    emptyRow(
+                        title: "No paper positions",
+                        subtitle: paperEmptyMessage
+                    )
+                } else {
+                    ForEach(store.positions) { position in
+                        PaperPositionRow(position: position)
+                    }
+                }
+            }
+
+            Section("Imported holdings") {
+                if importedLedgers.isEmpty {
+                    emptyRow(
+                        title: "No imported ledger",
+                        subtitle: "Brokerage CSV import lands in P4-05."
+                    )
+                } else {
+                    ForEach(importedLedgers) { ledger in
+                        LedgerRow(ledger: ledger)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .overlay(alignment: .top) {
+            if case .failed(let message) = store.loadState {
+                LoadErrorBanner(message: message)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+            }
+        }
+    }
+
+    private var paperEmptyMessage: String {
+        switch store.loadState {
+        case .failed: "Couldn't fetch positions — pull to retry above."
+        case .loading: "Loading…"
+        default: "Place a paper trade from the Research tab or the + button."
+        }
+    }
+
+    private func emptyRow(title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.subheadline.weight(.medium))
+            Text(subtitle).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct LedgerRow: View {
+    let ledger: PrivateLedger
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(ledger.accountName).font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("Imported \(ledger.importedAt, style: .date)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if ledger.holdings.isEmpty {
+                Text("No holdings parsed from this import.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(ledger.holdings.sorted(by: { $0.ticker < $1.ticker })) { holding in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(holding.ticker).font(.subheadline)
+                        Spacer()
+                        Text("\(qtyString(holding.quantity)) @ \(formatPrice(holding.costBasis))")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func qtyString(_ qty: Double) -> String {
+        qty.truncatingRemainder(dividingBy: 1) == 0
+            ? String(Int(qty))
+            : String(format: "%.2f", qty)
+    }
+}
+
+private struct PaperPositionRow: View {
+    let position: BrokerPosition
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(position.symbol).font(.subheadline.weight(.semibold))
+                Text("\(qtyString) \(position.side.uppercased()) @ \(formatPrice(position.avgEntryPrice))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                if let value = position.marketValue {
+                    Text(formatPrice(value)).font(.subheadline.monospacedDigit())
+                }
+                if let pl = position.unrealizedPl {
+                    Text(plLabel(pl))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(pl >= 0 ? .green : .red)
+                }
+            }
+        }
+    }
+
+    private var qtyString: String {
+        position.qty.truncatingRemainder(dividingBy: 1) == 0
+            ? String(Int(position.qty))
+            : String(format: "%.2f", position.qty)
+    }
+}
+
+// MARK: - Orders
+
+private struct OrdersSection: View {
+    let store: PortfolioStore
+    let paperTrades: [PaperTradeRecord]
+    let onTapAnalysis: (PaperTradeRecord) -> Void
+
+    var body: some View {
+        List {
+            if paperTrades.isEmpty && store.orders.isEmpty {
+                Section {
+                    Text(emptyMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !paperTrades.isEmpty {
+                Section("Placed in app") {
+                    ForEach(paperTrades) { trade in
+                        Button { onTapAnalysis(trade) } label: {
+                            PaperTradeRow(trade: trade)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            if !store.orders.isEmpty {
+                Section("Broker history") {
+                    ForEach(store.orders) { order in
+                        BrokerOrderRow(order: order)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private var emptyMessage: String {
+        switch store.loadState {
+        case .failed(let message): message
+        case .loading: "Loading orders…"
+        default: "No paper trades yet. Place one from Research → \"Test with paper trade\"."
+        }
+    }
+}
+
+private struct PaperTradeRow: View {
+    let trade: PaperTradeRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(trade.ticker).font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(trade.submittedAt, style: .date)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Text("\(trade.side.uppercased()) \(qtyString) · \(trade.status)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if trade.sourceResearchSessionID != nil || !trade.sourceQuery.isEmpty {
+                    Label("Linked analysis", systemImage: "link.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.tint)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var qtyString: String {
+        trade.qty.truncatingRemainder(dividingBy: 1) == 0
+            ? String(Int(trade.qty))
+            : String(format: "%.2f", trade.qty)
+    }
+}
+
+private struct BrokerOrderRow: View {
+    let order: BrokerOrder
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(order.symbol).font(.subheadline.weight(.semibold))
+                Text("\(order.side.uppercased()) \(qtyString) · \(order.status)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let submitted = order.submittedAt {
+                Text(submitted, style: .date)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var qtyString: String {
+        order.qty.truncatingRemainder(dividingBy: 1) == 0
+            ? String(Int(order.qty))
+            : String(format: "%.2f", order.qty)
+    }
+}
+
+// MARK: - Performance
+
+private struct PerformanceSection: View {
+    let store: PortfolioStore
+    let paperTrades: [PaperTradeRecord]
+    let snapshots: [PortfolioSnapshot]
+
+    var body: some View {
+        List {
+            Section("Cumulative return vs SPY") {
+                if let chart = chartData {
+                    performanceChart(chart)
+                        .frame(height: 220)
+                } else {
+                    Text(emptyChartMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Stats") {
+                statRow(label: "Paper trades placed", value: "\(paperTrades.count)")
+                statRow(
+                    label: "Open positions",
+                    value: "\(store.positions.count)"
+                )
+                if let totalValue = totalMarketValue {
+                    statRow(label: "Total market value", value: formatPrice(totalValue))
+                }
+                if let totalPL = totalUnrealized {
+                    statRow(
+                        label: "Unrealized P/L",
+                        value: plLabel(totalPL),
+                        valueColor: totalPL >= 0 ? .green : .red
+                    )
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    fileprivate struct PerformanceSeries {
+        var portfolio: [(date: Date, returnPct: Double)]
+        var benchmark: [(date: Date, returnPct: Double)]
+    }
+
+    @ViewBuilder
+    private func performanceChart(_ series: PerformanceSeries) -> some View {
+        Chart {
+            ForEach(Array(series.portfolio.enumerated()), id: \.offset) { _, point in
+                LineMark(
+                    x: .value("Date", point.date),
+                    y: .value("Return %", point.returnPct),
+                    series: .value("Series", "Portfolio")
+                )
+                .foregroundStyle(by: .value("Series", "Portfolio"))
+            }
+            ForEach(Array(series.benchmark.enumerated()), id: \.offset) { _, point in
+                LineMark(
+                    x: .value("Date", point.date),
+                    y: .value("Return %", point.returnPct),
+                    series: .value("Series", "SPY")
+                )
+                .foregroundStyle(by: .value("Series", "SPY"))
+            }
+        }
+        .chartYAxisLabel("% return")
+        .chartXAxis {
+            AxisMarks(values: .stride(by: .day, count: 7))
+        }
+    }
+
+    // Builds the chart from *measured* daily snapshots — each point is the
+    // portfolio's actual (value − cost)/cost return on the day it was
+    // captured, so we never project today's value onto a past date. The SPY
+    // line is normalized to its close on/after the first snapshot date so both
+    // series start at 0% on the same baseline and are visually comparable.
+    private var chartData: PerformanceSeries? {
+        let portfolioCurve: [(date: Date, returnPct: Double)] = snapshots.compactMap {
+            guard let pct = $0.returnPct else { return nil }
+            return ($0.capturedDay, pct)
+        }
+        guard let baselineDate = portfolioCurve.first?.date else { return nil }
+
+        var benchPoints: [(date: Date, returnPct: Double)] = []
+        if let benchmark = store.benchmark, !benchmark.points.isEmpty {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withFullDate]
+            let dated: [(Date, Double)] = benchmark.points.compactMap { p in
+                guard let date = formatter.date(from: p.date) else { return nil }
+                return (date, p.close)
+            }
+            // Baseline = first benchmark close on/after the portfolio's first
+            // snapshot date, so both lines share a common 0% origin.
+            if let baseline = dated.first(where: { $0.0 >= baselineDate })?.1 ?? dated.last?.1,
+               baseline > 0 {
+                benchPoints = dated
+                    .filter { $0.0 >= baselineDate }
+                    .map { ($0.0, ($0.1 / baseline - 1) * 100) }
+            }
+        }
+        return PerformanceSeries(portfolio: portfolioCurve, benchmark: benchPoints)
+    }
+
+    private var emptyChartMessage: String {
+        if case .failed(let message) = store.loadState { return message }
+        if store.positions.isEmpty && snapshots.isEmpty {
+            return "Hold a paper position and refresh to start tracking performance."
+        }
+        return "Refresh to capture today's portfolio value. The return curve builds up one point per day."
+    }
+
+    private var totalMarketValue: Double? {
+        let values = store.positions.compactMap(\.marketValue)
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +)
+    }
+
+    private var totalUnrealized: Double? {
+        let values = store.positions.compactMap(\.unrealizedPl)
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +)
+    }
+
+    private func statRow(label: String, value: String, valueColor: Color? = nil) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(value)
+                .font(.subheadline.monospacedDigit().weight(.medium))
+                .foregroundStyle(valueColor ?? .primary)
+        }
+    }
+}
+
+// MARK: - Order sheet
+
+private struct PaperTradeOrderSheet: View {
+    let store: PortfolioStore
+    let paperTradePrefill: PaperTradePrefill
+    @Environment(\.dismiss) private var dismiss
+
     @State private var ticker: String = ""
-    // Intentionally optional / unset: this is a research tool, not an advisor,
-    // so we don't pre-pick a direction (buy vs. sell) for the user.
-    @State private var side: PaperOrderSide?
+    @State private var side: Side?
     @State private var quantity: String = "1"
     @State private var sourceNote: String = ""
-    @State private var lastSubmitted: String?
+    @State private var pendingSource: PaperTradePrefill.Pending?
+    @State private var isSubmitting: Bool = false
 
-    enum PaperOrderSide: String, CaseIterable, Identifiable {
+    enum Side: String, CaseIterable, Identifiable {
         case buy, sell
         var id: String { rawValue }
     }
@@ -28,9 +515,9 @@ struct PortfolioView: View {
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
                     Picker("Side", selection: $side) {
-                        Text("Select").tag(PaperOrderSide?.none)
-                        ForEach(PaperOrderSide.allCases) { value in
-                            Text(value.rawValue.capitalized).tag(PaperOrderSide?.some(value))
+                        Text("Select").tag(Side?.none)
+                        ForEach(Side.allCases) { value in
+                            Text(value.rawValue.capitalized).tag(Side?.some(value))
                         }
                     }
                     .pickerStyle(.segmented)
@@ -39,7 +526,7 @@ struct PortfolioView: View {
                 } header: {
                     Text("Paper trade")
                 } footer: {
-                    Text("Paper trade routing lands in P4-04. This form captures the prefill from Research.")
+                    Text("Routes through the backend's Alpaca paper endpoint. Never live.")
                 }
 
                 if !sourceNote.isEmpty {
@@ -50,28 +537,42 @@ struct PortfolioView: View {
                     }
                 }
 
-                Section {
-                    Button {
-                        guard let side else { return }
-                        lastSubmitted = "\(side.rawValue.uppercased()) \(quantity) \(ticker)"
-                    } label: {
-                        Label("Submit paper trade", systemImage: "paperplane.fill")
+                if let error = store.submitError {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                            .font(.subheadline)
                     }
-                    .disabled(ticker.trimmingCharacters(in: .whitespaces).isEmpty
-                              || Int(quantity) == nil
-                              || side == nil)
                 }
 
-                if let lastSubmitted {
-                    Section("Last simulated order") {
-                        Text(lastSubmitted).monospaced()
+                Section {
+                    Button {
+                        Task { await submit() }
+                    } label: {
+                        if isSubmitting {
+                            HStack { ProgressView(); Text("Submitting…") }
+                        } else {
+                            Label("Submit paper trade", systemImage: "paperplane.fill")
+                        }
                     }
+                    .disabled(!canSubmit || isSubmitting)
                 }
             }
-            .navigationTitle("Portfolio")
+            .navigationTitle("New paper trade")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
             .onAppear(perform: applyPrefill)
-            .onChange(of: paperTradePrefill.pending) { _, _ in applyPrefill() }
         }
+    }
+
+    private var canSubmit: Bool {
+        !ticker.trimmingCharacters(in: .whitespaces).isEmpty
+            && side != nil
+            && (Double(quantity) ?? 0) > 0
     }
 
     private func applyPrefill() {
@@ -80,5 +581,155 @@ struct PortfolioView: View {
         sourceNote = "\"\(pending.sourceQuery)\" · "
             + pending.sourceAnalysisType.rawValue.capitalized
             + " · confidence: \(pending.sourceConfidence)"
+        pendingSource = pending
     }
+
+    private func submit() async {
+        guard let side, let qty = Double(quantity), qty > 0 else { return }
+        isSubmitting = true
+        defer { isSubmitting = false }
+        let order = await store.placeOrder(
+            ticker: ticker,
+            qty: qty,
+            side: side.rawValue,
+            source: pendingSource
+        )
+        if order != nil {
+            dismiss()
+        }
+    }
+}
+
+// MARK: - Linked analysis sheet
+
+private struct LinkedAnalysisSheet: View {
+    let trade: PaperTradeRecord
+    let modelContext: ModelContext
+
+    @State private var linkedEntry: ResearchHistoryEntry?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    summary
+                    Divider()
+                    if let entry = linkedEntry {
+                        linkedAnalysis(entry: entry)
+                    } else if !trade.sourceQuery.isEmpty {
+                        cachedAnalysis
+                    } else {
+                        Text("This paper trade was placed without a linked analysis.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("\(trade.side.uppercased()) \(trade.ticker)")
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear(perform: resolveEntry)
+        }
+    }
+
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(formatQty(trade.qty)) shares · \(trade.status)")
+                .font(.subheadline.weight(.semibold))
+            Text("Submitted \(trade.submittedAt, style: .date)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func linkedAnalysis(entry: ResearchHistoryEntry) -> some View {
+        Text("Linked analysis").font(.headline)
+        Text(entry.query).font(.body)
+        Text("Confidence: \(entry.confidence)")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        if !entry.narrative.isEmpty {
+            Text(entry.narrative).font(.body)
+        }
+        if !entry.indicators.isEmpty {
+            Divider()
+            Text("Technical indicators").font(.headline)
+            ForEach(entry.indicators.keys.sorted(), id: \.self) { key in
+                HStack {
+                    Text(key.uppercased()).font(.subheadline.weight(.medium))
+                    Spacer()
+                    Text(stringValue(entry.indicators[key]))
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        Text(entry.disclaimer)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var cachedAnalysis: some View {
+        Text("Linked analysis (snapshot)").font(.headline)
+        Text(trade.sourceQuery).font(.body)
+        Text("Type: \(trade.sourceAnalysisType.rawValue.capitalized) · confidence: \(trade.sourceConfidence)")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        Text("The original analysis history entry is no longer available; the snapshot above was captured at trade time.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func resolveEntry() {
+        guard let sessionID = trade.sourceResearchSessionID else { return }
+        var descriptor = FetchDescriptor<ResearchHistoryEntry>(
+            predicate: #Predicate { $0.sessionID == sessionID }
+        )
+        descriptor.fetchLimit = 1
+        linkedEntry = (try? modelContext.fetch(descriptor))?.first
+    }
+
+    private func formatQty(_ qty: Double) -> String {
+        qty.truncatingRemainder(dividingBy: 1) == 0
+            ? String(Int(qty))
+            : String(format: "%.2f", qty)
+    }
+
+    private func stringValue(_ value: JSONValue?) -> String {
+        guard let value else { return "—" }
+        switch value {
+        case .null: return "—"
+        case .bool(let b): return b ? "true" : "false"
+        case .int(let i): return String(i)
+        case .double(let d): return String(format: "%.2f", d)
+        case .string(let s): return s
+        case .array(let arr): return "[\(arr.count) values]"
+        case .object: return "{…}"
+        }
+    }
+}
+
+// MARK: - Shared helpers
+
+private struct LoadErrorBanner: View {
+    let message: String
+    var body: some View {
+        Label(message, systemImage: "exclamationmark.triangle")
+            .font(.footnote)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.red.opacity(0.12))
+            .foregroundStyle(.red)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private func formatPrice(_ value: Double) -> String {
+    String(format: "$%.2f", value)
+}
+
+private func plLabel(_ value: Double) -> String {
+    let sign = value >= 0 ? "+" : "−"
+    return sign + String(format: "$%.2f", abs(value))
 }

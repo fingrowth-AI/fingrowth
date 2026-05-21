@@ -6,6 +6,7 @@ struct FinGrowthApp: App {
     @State private var settings = AppSettings()
     private let container: ModelContainer
     private let apiClient: APIClient
+    private let paperTradingClient: PaperTradingClient
 
     init() {
         let settings = AppSettings()
@@ -16,11 +17,16 @@ struct FinGrowthApp: App {
             fatalError("Failed to initialize SwiftData container: \(error)")
         }
         apiClient = APIClient(settings: settings)
+        paperTradingClient = PaperTradingClient(settings: settings)
     }
 
     var body: some Scene {
         WindowGroup {
-            RootTabView(settings: settings, apiClient: apiClient)
+            RootTabView(
+                settings: settings,
+                apiClient: apiClient,
+                paperTradingClient: paperTradingClient
+            )
         }
         .modelContainer(container)
     }
