@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import Charts
+import UniformTypeIdentifiers
 
 // Portfolio tab (P4-04). Three sub-views via a segmented picker:
 //   - Holdings: imported PrivateLedger rows + remote paper positions
@@ -25,6 +26,9 @@ struct PortfolioView: View {
     @State private var section: PortfolioSection = .holdings
     @State private var showOrderForm: Bool = false
     @State private var selectedTradeForAnalysis: PaperTradeRecord?
+    @State private var showCSVImporter: Bool = false
+    @State private var csvImportError: String?
+    @State private var lastImportSummary: String?
 
     enum PortfolioSection: String, CaseIterable, Identifiable {
         case holdings, orders, performance
@@ -55,7 +59,9 @@ struct PortfolioView: View {
                     case .holdings:
                         HoldingsSection(
                             store: store,
-                            importedLedgers: importedLedgers
+                            importedLedgers: importedLedgers,
+                            lastImportSummary: lastImportSummary,
+                            onImportCSV: { showCSVImporter = true }
                         )
                     case .orders:
                         OrdersSection(
@@ -109,7 +115,75 @@ struct PortfolioView: View {
             .sheet(item: $selectedTradeForAnalysis) { trade in
                 LinkedAnalysisSheet(trade: trade, modelContext: modelContext)
             }
+            .fileImporter(
+                isPresented: $showCSVImporter,
+                allowedContentTypes: csvImportContentTypes,
+                allowsMultipleSelection: false
+            ) { result in
+                handleCSVImport(result: result)
+            }
+            .alert(
+                "Import failed",
+                isPresented: Binding(
+                    get: { csvImportError != nil },
+                    set: { if !$0 { csvImportError = nil } }
+                ),
+                presenting: csvImportError
+            ) { _ in
+                Button("OK", role: .cancel) { csvImportError = nil }
+            } message: { message in
+                Text(message)
+            }
         }
+    }
+
+    // CSV plus a couple of brokerage-export variants. UTType.commaSeparatedText
+    // would already cover .csv on most brokers, but Schwab in particular
+    // sometimes labels the file as text/plain.
+    private var csvImportContentTypes: [UTType] {
+        [.commaSeparatedText, .plainText, .text]
+    }
+
+    private func handleCSVImport(result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            do {
+                let text = try readCSV(at: url)
+                let imported = try CSVPrivacyParser.parse(
+                    csv: text,
+                    accountName: url.deletingPathExtension().lastPathComponent
+                )
+                modelContext.insert(imported.ledger)
+                modelContext.insert(imported.profile)
+                try modelContext.save()
+                lastImportSummary = "Imported \(imported.ledger.holdings.count) holdings from \(imported.format.rawValue)."
+            } catch let error as CSVParserError {
+                csvImportError = error.errorDescription
+            } catch {
+                csvImportError = "Couldn't import CSV: \(error.localizedDescription)"
+            }
+        case .failure(let error):
+            // User cancellation surfaces here too; suppress to avoid noise.
+            if (error as NSError).code != NSUserCancelledError {
+                csvImportError = error.localizedDescription
+            }
+        }
+    }
+
+    private func readCSV(at url: URL) throws -> String {
+        // Files vended through the document picker are security-scoped.
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let data = try Data(contentsOf: url)
+        if let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        // Some brokerage exports are Latin-1 / Windows-1252.
+        if let text = String(data: data, encoding: .windowsCP1252) {
+            return text
+        }
+        throw CSVParserError.empty
     }
 }
 
@@ -118,6 +192,8 @@ struct PortfolioView: View {
 private struct HoldingsSection: View {
     let store: PortfolioStore
     let importedLedgers: [PrivateLedger]
+    let lastImportSummary: String?
+    let onImportCSV: () -> Void
 
     var body: some View {
         List {
@@ -134,16 +210,27 @@ private struct HoldingsSection: View {
                 }
             }
 
-            Section("Imported holdings") {
+            Section {
                 if importedLedgers.isEmpty {
                     emptyRow(
                         title: "No imported ledger",
-                        subtitle: "Brokerage CSV import lands in P4-05."
+                        subtitle: "Import a Fidelity, Schwab, or Robinhood CSV. Parsed on-device; raw rows never leave your phone."
                     )
                 } else {
                     ForEach(importedLedgers) { ledger in
                         LedgerRow(ledger: ledger)
                     }
+                }
+                Button {
+                    onImportCSV()
+                } label: {
+                    Label("Import brokerage CSV", systemImage: "square.and.arrow.down")
+                }
+            } header: {
+                Text("Imported holdings")
+            } footer: {
+                if let lastImportSummary {
+                    Text(lastImportSummary).font(.caption)
                 }
             }
         }
