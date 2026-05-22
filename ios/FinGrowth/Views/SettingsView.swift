@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Bindable var settings: AppSettings
+    @Bindable var gemma: GemmaService
 
     var body: some View {
         NavigationStack {
@@ -35,6 +36,15 @@ struct SettingsView: View {
                         Text("Backend")
                     } footer: {
                         Text("Cloud agents reachable at this URL. Persists across restarts.")
+                    }
+
+                    Section {
+                        Toggle("Enable on-device model", isOn: $settings.onDeviceModelEnabled)
+                        GemmaModelStatusView(gemma: gemma)
+                    } header: {
+                        Text("On-device intelligence")
+                    } footer: {
+                        Text("Gemma 4 runs entirely on this device for PII parsing and query rewriting. Enabling it downloads the model once (~2.5GB), then caches it.")
                     }
 
                     Section {

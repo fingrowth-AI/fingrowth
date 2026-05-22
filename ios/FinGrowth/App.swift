@@ -4,6 +4,7 @@ import SwiftData
 @main
 struct FinGrowthApp: App {
     @State private var settings = AppSettings()
+    @State private var gemma = GemmaService.shared
     private let container: ModelContainer
     private let apiClient: APIClient
     private let paperTradingClient: PaperTradingClient
@@ -25,7 +26,8 @@ struct FinGrowthApp: App {
             RootTabView(
                 settings: settings,
                 apiClient: apiClient,
-                paperTradingClient: paperTradingClient
+                paperTradingClient: paperTradingClient,
+                gemma: gemma
             )
         }
         .modelContainer(container)

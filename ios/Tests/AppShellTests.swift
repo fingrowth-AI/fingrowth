@@ -133,6 +133,17 @@ final class AppShellTests: XCTestCase {
         XCTAssertEqual(second.appearance, .dark)
     }
 
+    func testOnDeviceModelDisabledByDefaultAndPersists() {
+        let defaults = makeIsolatedDefaults()
+
+        let first = AppSettings(defaults: defaults)
+        XCTAssertFalse(first.onDeviceModelEnabled, "must default off so no accidental 2.5GB download")
+
+        first.onDeviceModelEnabled = true
+        let second = AppSettings(defaults: defaults)
+        XCTAssertTrue(second.onDeviceModelEnabled)
+    }
+
     // MARK: - AppDataLocation
 
     func testSecureStoreURLCreatesDirectory() throws {

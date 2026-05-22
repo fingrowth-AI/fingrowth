@@ -5,6 +5,7 @@ struct RootTabView: View {
     @Bindable var settings: AppSettings
     let apiClient: APIClient
     let paperTradingClient: PaperTradingService
+    @Bindable var gemma: GemmaService
     @State private var selection: RootTab = .research
     @State private var paperTradePrefill = PaperTradePrefill()
     @Environment(\.modelContext) private var modelContext
@@ -26,6 +27,15 @@ struct RootTabView: View {
                     client: paperTradingClient,
                     context: modelContext
                 )
+            }
+        }
+        // Prepare the on-device model only when the user has opted in, so a
+        // build with the real backend linked never auto-starts the ~2.5GB
+        // first-launch download. The stub is instant/offline; the real backend
+        // downloads (or no-ops once cached).
+        .task(id: settings.onDeviceModelEnabled) {
+            if settings.onDeviceModelEnabled {
+                await gemma.prepare()
             }
         }
     }
@@ -51,7 +61,7 @@ struct RootTabView: View {
         case .privacy:
             PrivacyView()
         case .settings:
-            SettingsView(settings: settings)
+            SettingsView(settings: settings, gemma: gemma)
         }
     }
 }
