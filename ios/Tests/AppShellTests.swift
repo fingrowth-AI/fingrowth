@@ -117,6 +117,22 @@ final class AppShellTests: XCTestCase {
         XCTAssertEqual(next.backendURL, AppSettings.defaultBackendURL)
     }
 
+    func testAppearanceDefaultsToSystem() {
+        let defaults = makeIsolatedDefaults()
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertEqual(settings.appearance, .system)
+    }
+
+    func testAppearancePersistsAcrossRestarts() {
+        let defaults = makeIsolatedDefaults()
+
+        let first = AppSettings(defaults: defaults)
+        first.appearance = .dark
+
+        let second = AppSettings(defaults: defaults)
+        XCTAssertEqual(second.appearance, .dark)
+    }
+
     // MARK: - AppDataLocation
 
     func testSecureStoreURLCreatesDirectory() throws {
