@@ -70,7 +70,7 @@ enum DifferentialPrivacy {
             return GeneralizedProfile(
                 privacyLevel: .moderate,
                 sectorWeights: categories,
-                largestPosition: largestPositionBucket(categories),
+                largestPosition: largestPositionBucket(profile),
                 diversification: diversificationLevel(categories),
                 riskScore: nil,
                 valueBucket: nil
@@ -79,7 +79,7 @@ enum DifferentialPrivacy {
             return GeneralizedProfile(
                 privacyLevel: .detailed,
                 sectorWeights: categories,
-                largestPosition: largestPositionBucket(categories),
+                largestPosition: largestPositionBucket(profile),
                 diversification: diversificationLevel(categories),
                 riskScore: profile.riskScore,
                 valueBucket: profile.totalValueBucket
@@ -100,9 +100,21 @@ enum DifferentialPrivacy {
         }
     }
 
-    private static func largestPositionBucket(_ categories: [String: Double]) -> String? {
-        guard let max = categories.values.max() else { return nil }
-        return positionBucket(forPercent: max)
+    // Buckets ordered smallest → largest so we can pick the biggest *position*.
+    private static let bucketRank = ["tiny", "small", "moderate", "large", "concentrated"]
+
+    // The largest individual position's bucket, read from the buckets computed
+    // per holding at import — NOT the largest sector aggregate. Five 20% tech
+    // holdings read "large", not "concentrated".
+    private static func largestPositionBucket(_ profile: ShareableProfile) -> String? {
+        let buckets = decodeBuckets(profile.positionSizeBucketsJSON)
+        return buckets.max { (bucketRank.firstIndex(of: $0) ?? -1) < (bucketRank.firstIndex(of: $1) ?? -1) }
+    }
+
+    private static func decodeBuckets(_ json: String) -> [String] {
+        guard let data = json.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [String] else { return [] }
+        return array
     }
 
     // Herfindahl-based: a concentrated book is low-diversification.

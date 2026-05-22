@@ -387,8 +387,21 @@ enum CSVPrivacyParser {
             totalValueBucket: bucket,
             sectorWeightsJSON: json,
             riskScore: risk,
-            generatedAt: now
+            generatedAt: now,
+            positionSizeBucketsJSON: positionBucketsJSON(from: holdings, totalValue: totalValue)
         )
+    }
+
+    // Per-holding position-size buckets (design §8.2), generalized so they carry
+    // no raw share counts or values — only the bucket each position falls into.
+    private static func positionBucketsJSON(from holdings: [LedgerHolding], totalValue: Double) -> String {
+        guard totalValue > 0 else { return "[]" }
+        let buckets = holdings.map { holding -> String in
+            let percent = holding.quantity * holding.costBasis / totalValue * 100
+            return DifferentialPrivacy.positionBucket(forPercent: percent)
+        }
+        let data = (try? JSONSerialization.data(withJSONObject: buckets)) ?? Data("[]".utf8)
+        return String(data: data, encoding: .utf8) ?? "[]"
     }
 
     // Herfindahl-style concentration score in [0, 1]. A single-stock

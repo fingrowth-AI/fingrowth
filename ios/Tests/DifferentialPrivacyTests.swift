@@ -14,11 +14,13 @@ final class DifferentialPrivacyTests: XCTestCase {
     // ShareableProfile carries sector weights; AAPL+MSFT roll up to Information
     // Technology (75%), bonds to Fixed Income (25%).
     private func techAndBondsProfile(id: UUID = UUID()) -> ShareableProfile {
+        // AAPL 45% → concentrated, MSFT 30% → large, bonds 25% → large.
         ShareableProfile(
             id: id,
             totalValueBucket: "50k-250k",
             sectorWeightsJSON: #"{"Information Technology": 75, "Fixed Income": 25}"#,
-            riskScore: 0.62
+            riskScore: 0.62,
+            positionSizeBucketsJSON: #"["concentrated","large","large"]"#
         )
     }
 
@@ -76,11 +78,37 @@ final class DifferentialPrivacyTests: XCTestCase {
     func testWellDiversifiedPortfolioReadsHigh() {
         let profile = ShareableProfile(
             totalValueBucket: "50k-250k",
-            sectorWeightsJSON: #"{"Information Technology": 20, "Health Care": 20, "Financials": 20, "Energy": 20, "Consumer Staples": 20}"#
+            sectorWeightsJSON: #"{"Information Technology": 20, "Health Care": 20, "Financials": 20, "Energy": 20, "Consumer Staples": 20}"#,
+            positionSizeBucketsJSON: #"["large","large","large","large","large"]"#
         )
         let result = DifferentialPrivacy.generalize(profile: profile, privacyLevel: .moderate)
         XCTAssertEqual(result.diversification, "high")
         XCTAssertEqual(result.largestPosition, "large")  // 20% each
+    }
+
+    func testLargestPositionReflectsHoldingsNotSectorAggregate() {
+        // Five 20% tech holdings aggregate to tech: 100, but no single position
+        // is concentrated — largestPosition must read "large", not "concentrated".
+        let profile = ShareableProfile(
+            totalValueBucket: "50k-250k",
+            sectorWeightsJSON: #"{"Information Technology": 100}"#,
+            positionSizeBucketsJSON: #"["large","large","large","large","large"]"#
+        )
+        let result = DifferentialPrivacy.generalize(profile: profile, privacyLevel: .moderate)
+        XCTAssertEqual(result.sectorWeights["tech"], 100)
+        XCTAssertEqual(result.largestPosition, "large", "must reflect individual positions, not the sector aggregate")
+    }
+
+    func testImportPopulatesPositionBucketsConsumedByGeneralize() async throws {
+        // End-to-end: a dominant holding yields a "concentrated" largest position.
+        let csv = """
+        Symbol,Quantity,Average Cost
+        AAPL,90,100
+        MSFT,10,100
+        """
+        let imported = try await CSVPrivacyParser.parse(csvData: csv)
+        let generalized = DifferentialPrivacy.generalize(profile: imported.profile, privacyLevel: .moderate)
+        XCTAssertEqual(generalized.largestPosition, "concentrated")  // AAPL ~90%
     }
 
     func testPrivacyLevelPersistsInSettings() {

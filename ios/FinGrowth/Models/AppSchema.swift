@@ -152,6 +152,32 @@ enum AppSchemaV2: VersionedSchema {
         ]
     }
 
+    // Pinned pre-V5 ShareableProfile shape (no positionSizeBucketsJSON). V2–V4
+    // all shipped this shape, so they reference AppSchemaV2.ShareableProfile;
+    // only V5 adds the position-buckets column.
+    @Model
+    final class ShareableProfile {
+        @Attribute(.unique) var id: UUID
+        var totalValueBucket: String
+        var sectorWeightsJSON: String
+        var riskScore: Double
+        var generatedAt: Date
+
+        init(
+            id: UUID = UUID(),
+            totalValueBucket: String,
+            sectorWeightsJSON: String = "{}",
+            riskScore: Double = 0,
+            generatedAt: Date = .now
+        ) {
+            self.id = id
+            self.totalValueBucket = totalValueBucket
+            self.sectorWeightsJSON = sectorWeightsJSON
+            self.riskScore = riskScore
+            self.generatedAt = generatedAt
+        }
+    }
+
     // V2 shapes of the imported-portfolio models, pinned so V3 can add fields
     // (purchaseDate, accountType, sourceBrokerage) and drop PortfolioSnapshot
     // without corrupting the on-disk description of an existing V2 store. The
@@ -283,7 +309,7 @@ enum AppSchemaV3: VersionedSchema {
         [
             PrivateLedger.self,
             LedgerHolding.self,
-            ShareableProfile.self,
+            AppSchemaV2.ShareableProfile.self,
             AuditEntry.self,
             ResearchHistoryEntry.self,
             PaperTradeRecord.self,
@@ -361,6 +387,27 @@ enum AppSchemaV4: VersionedSchema {
         [
             PrivateLedger.self,
             LedgerHolding.self,
+            AppSchemaV2.ShareableProfile.self,
+            AuditEntry.self,
+            ResearchHistoryEntry.self,
+            PaperTradeRecord.self,
+        ]
+    }
+}
+
+// MARK: - V5 (P5-05 position-size buckets in ShareableProfile)
+
+// V5 adds positionSizeBucketsJSON to ShareableProfile so the Differential
+// Privacy module can report the largest *position* (not the largest sector).
+// The live ShareableProfile is the current (V5) shape; additive-optional, so
+// V4 → V5 is lightweight.
+enum AppSchemaV5: VersionedSchema {
+    static let versionIdentifier = Schema.Version(5, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            PrivateLedger.self,
+            LedgerHolding.self,
             ShareableProfile.self,
             AuditEntry.self,
             ResearchHistoryEntry.self,
@@ -373,12 +420,18 @@ enum AppSchemaV4: VersionedSchema {
 
 enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self]
+        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self, AppSchemaV5.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5]
     }
+
+    // Additive optional positionSizeBucketsJSON column on ShareableProfile.
+    static let migrateV4toV5 = MigrationStage.lightweight(
+        fromVersion: AppSchemaV4.self,
+        toVersion: AppSchemaV5.self
+    )
 
     // Additive optional PII columns on PrivateLedger.
     static let migrateV3toV4 = MigrationStage.lightweight(
