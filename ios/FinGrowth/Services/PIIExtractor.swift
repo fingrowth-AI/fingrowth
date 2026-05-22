@@ -4,9 +4,10 @@ import Foundation
 //
 // The privacy boundary is enforced at ingestion: the parser separates a full
 // PrivateLedger (device-only, includes PII like account numbers / holder
-// names) from an anonymized ShareableProfile. This file produces the PIIReport
-// — an auditable record of every PII field detected, with type and confidence,
-// and never the raw value in full.
+// names) from an anonymized ShareableProfile. This file produces both the
+// PIIReport — an auditable record of every PII field detected, with type and
+// confidence, and never the raw value in full — and the raw identity fields the
+// device-only ledger needs.
 //
 // Two strategies sit behind PIIExtracting: a deterministic heuristic detector
 // (the P4-05-style fallback that also runs in the simulator/tests with zero
@@ -53,58 +54,93 @@ struct PIIReport: Equatable, Sendable {
     }
 }
 
+// The report plus the raw identity fields (account number / holder name) that
+// belong ONLY on the device-only PrivateLedger. Raw values never enter the
+// report; the report only ever holds masked renderings.
+struct PIIExtractionResult: Equatable, Sendable {
+    var report: PIIReport
+    var accountNumber: String?
+    var accountHolder: String?
+
+    static let empty = PIIExtractionResult(report: .empty, accountNumber: nil, accountHolder: nil)
+}
+
 protocol PIIExtracting: Sendable {
-    func extractPII(rows: [[String]], headers: [String]) async -> PIIReport
+    func extract(
+        headers: [String],
+        dataRows: [[String]],
+        metadataRows: [[String]]
+    ) async -> PIIExtractionResult
 }
 
 // MARK: - Heuristic extractor (deterministic; fallback + dev/test path)
 
 struct HeuristicPIIExtractor: PIIExtracting, Sendable {
-    func extractPII(rows: [[String]], headers: [String]) async -> PIIReport {
-        detect(rows: rows, headers: headers)
+    func extract(
+        headers: [String],
+        dataRows: [[String]],
+        metadataRows: [[String]]
+    ) async -> PIIExtractionResult {
+        detect(headers: headers, dataRows: dataRows, metadataRows: metadataRows)
     }
 
     // Synchronous core so the legacy sync parse path can reuse it.
-    func detect(rows: [[String]], headers: [String]) -> PIIReport {
+    func detect(
+        headers: [String],
+        dataRows: [[String]],
+        metadataRows: [[String]] = []
+    ) -> PIIExtractionResult {
         var findings: [PIIFinding] = []
-        let normalized = headers.map(Self.normalize)
-        let dataRows = rows.dropFirst()  // assume first row is the header
+        var seenKinds = Set<PIIFinding.Kind>()
+        var accountNumber: String?
+        var accountHolder: String?
 
-        // 1. Label-driven detection: a column whose header names a PII field.
-        for (index, header) in normalized.enumerated() {
-            guard let (kind, confidence) = Self.labeledKind(for: header) else { continue }
-            guard let value = firstNonEmptyValue(in: dataRows, column: index) else { continue }
+        func record(kind: PIIFinding.Kind, rawValue: String, confidence: Double, context: String) {
+            guard !seenKinds.contains(kind) else { return }
+            seenKinds.insert(kind)
             findings.append(PIIFinding(
                 kind: kind,
-                maskedValue: Self.mask(value, kind: kind),
+                maskedValue: Self.mask(rawValue, kind: kind),
                 confidence: confidence,
-                context: headers[index]
+                context: context
             ))
+            if kind == .accountNumber, accountNumber == nil { accountNumber = rawValue }
+            if kind == .holderName, accountHolder == nil { accountHolder = rawValue }
         }
 
-        // 2. Value-pattern detection for anything the labels missed (e.g. an
-        // SSN or email sitting in a generically-named column or metadata).
-        var seenKinds = Set(findings.map(\.kind))
-        for row in rows {
+        // 1. Labeled columns: a header that names a PII field.
+        let normalizedHeaders = headers.map(Self.normalize)
+        for (index, header) in normalizedHeaders.enumerated() {
+            guard let (kind, confidence) = Self.labeledKind(for: header) else { continue }
+            guard let value = firstNonEmptyValue(in: dataRows, column: index) else { continue }
+            record(kind: kind, rawValue: value, confidence: confidence, context: headers[index])
+        }
+
+        // 2. Metadata key-value lines above the table (e.g. "Account Holder: John A. Smith").
+        for row in metadataRows {
+            guard let (label, value) = Self.metadataKeyValue(row),
+                  let (kind, confidence) = Self.labeledKind(for: label) else { continue }
+            record(kind: kind, rawValue: value, confidence: confidence, context: "metadata")
+        }
+
+        // 3. Value-pattern detection (SSN / email) across metadata + data, for
+        // anything the labels missed.
+        for row in metadataRows + dataRows {
             for value in row {
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { continue }
-                if let kind = Self.patternKind(for: trimmed), !seenKinds.contains(kind) {
-                    findings.append(PIIFinding(
-                        kind: kind,
-                        maskedValue: Self.mask(trimmed, kind: kind),
-                        confidence: Self.patternConfidence(kind),
-                        context: "value"
-                    ))
-                    seenKinds.insert(kind)
-                }
+                guard !trimmed.isEmpty, let kind = Self.patternKind(for: trimmed) else { continue }
+                record(kind: kind, rawValue: trimmed, confidence: Self.patternConfidence(kind), context: "value")
             }
         }
 
-        return PIIReport(findings: findings)
+        return PIIExtractionResult(
+            report: PIIReport(findings: findings),
+            accountNumber: accountNumber,
+            accountHolder: accountHolder
+        )
     }
 
-    private func firstNonEmptyValue(in rows: ArraySlice<[String]>, column: Int) -> String? {
+    private func firstNonEmptyValue(in rows: [[String]], column: Int) -> String? {
         for row in rows where row.indices.contains(column) {
             let value = row[column].trimmingCharacters(in: .whitespacesAndNewlines)
             if !value.isEmpty { return value }
@@ -116,6 +152,24 @@ struct HeuristicPIIExtractor: PIIExtracting, Sendable {
 
     static func normalize(_ header: String) -> String {
         header.lowercased().filter { !$0.isWhitespace && $0 != "_" && $0 != "-" && $0 != "." && $0 != "#" }
+    }
+
+    // Parse a metadata row into (normalized label, raw value): either a
+    // two-cell row ["Account Holder","John A. Smith"] or a single cell with a
+    // colon ("Account Holder: John A. Smith").
+    static func metadataKeyValue(_ row: [String]) -> (label: String, value: String)? {
+        if row.count >= 2 {
+            let label = normalize(row[0])
+            let value = row[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !label.isEmpty, !value.isEmpty { return (label, value) }
+        }
+        if row.count == 1, let colon = row[0].firstIndex(of: ":") {
+            let label = normalize(String(row[0][..<colon]))
+            let value = String(row[0][row[0].index(after: colon)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !label.isEmpty, !value.isEmpty { return (label, value) }
+        }
+        return nil
     }
 
     // Specific holder labels only — deliberately excludes "name"/"accountname"
@@ -158,9 +212,8 @@ struct HeuristicPIIExtractor: PIIExtracting, Sendable {
 
     static func mask(_ value: String, kind: PIIFinding.Kind) -> String {
         switch kind {
-        case .accountNumber:
-            let last4 = String(value.suffix(4))
-            return "••••\(last4)"
+        case .accountNumber, .ssn, .phone:
+            return maskKeepingSuffix(value, suffix: 4)
         case .holderName:
             return value
                 .split(separator: " ")
@@ -169,14 +222,22 @@ struct HeuristicPIIExtractor: PIIExtracting, Sendable {
                     return token.count <= 1 ? String(first) : "\(first)\(String(repeating: "•", count: token.count - 1))"
                 }
                 .joined(separator: " ")
-        case .ssn:
-            return "•••-••-\(value.suffix(4))"
         case .email:
             guard let at = value.firstIndex(of: "@"), let first = value.first else { return "•••" }
             return "\(first)•••\(value[at...])"
-        case .phone:
-            return "•••-•••-\(value.suffix(4))"
         }
+    }
+
+    // Reveal the trailing `suffix` characters only when doing so still hides the
+    // majority of the value; short values are masked entirely so a 2-char
+    // account number can't leak through "last 4".
+    static func maskKeepingSuffix(_ value: String, suffix: Int) -> String {
+        let count = value.count
+        guard count > 0 else { return "" }
+        let reveal = count >= suffix * 2 ? suffix : 0
+        let hidden = String(repeating: "•", count: max(count - reveal, 1))
+        guard reveal > 0 else { return hidden }
+        return hidden + value.suffix(reveal)
     }
 }
 
@@ -184,24 +245,26 @@ struct HeuristicPIIExtractor: PIIExtracting, Sendable {
 
 // Uses the on-device model to classify column semantics — catching PII in
 // non-standard headers a fixed rule set would miss — and falls back to the
-// heuristic detector when the model isn't ready or inference fails. Only the
-// real model adds value here; with the development stub this resolves to the
-// heuristic result, which is exactly the design's required fallback.
+// heuristic detector when the model isn't ready or inference fails. A failed or
+// undetermined classification yields "" (never a guessed category), so failure
+// degrades to the heuristic result rather than fabricating findings.
 struct GemmaPIIExtractor: PIIExtracting {
     let gemma: GemmaService
     let fallback = HeuristicPIIExtractor()
 
-    func extractPII(rows: [[String]], headers: [String]) async -> PIIReport {
-        let baseline = fallback.detect(rows: rows, headers: headers)
-        // Only attempt model enrichment when a real model is actually loaded;
-        // otherwise the deterministic baseline is the answer.
-        guard await gemma.usesRealModel, await gemma.isReady else { return baseline }
+    func extract(
+        headers: [String],
+        dataRows: [[String]],
+        metadataRows: [[String]]
+    ) async -> PIIExtractionResult {
+        var result = fallback.detect(headers: headers, dataRows: dataRows, metadataRows: metadataRows)
+        // Only enrich when a real model is actually loaded; otherwise the
+        // deterministic baseline is the answer.
+        guard await gemma.usesRealModel, await gemma.isReady else { return result }
 
-        var byKind = Dictionary(grouping: baseline.findings, by: \.kind)
-        let dataRows = Array(rows.dropFirst())
+        var byKind = Dictionary(grouping: result.report.findings, by: \.kind)
         for (index, header) in headers.enumerated() {
-            guard let sample = dataRows.first(where: { $0.indices.contains(index) })?[index],
-                  !sample.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            guard let sample = firstSample(in: dataRows, column: index) else { continue }
             let category = await gemma.classify(
                 prompt: "Column header: \"\(header)\". Example value: \"\(sample)\".",
                 categories: ["account_number", "holder_name", "ssn", "email", "phone", "none"]
@@ -213,8 +276,21 @@ struct GemmaPIIExtractor: PIIExtracting {
                 confidence: 0.9,
                 context: header
             )]
+            // Non-standard columns the heuristic missed still populate the
+            // device-only ledger identity.
+            if kind == .accountNumber, result.accountNumber == nil { result.accountNumber = sample }
+            if kind == .holderName, result.accountHolder == nil { result.accountHolder = sample }
         }
-        return PIIReport(findings: byKind.values.flatMap { $0 })
+        result.report = PIIReport(findings: byKind.values.flatMap { $0 })
+        return result
+    }
+
+    private func firstSample(in rows: [[String]], column: Int) -> String? {
+        for row in rows where row.indices.contains(column) {
+            let value = row[column].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { return value }
+        }
+        return nil
     }
 
     private static func kind(from category: String) -> PIIFinding.Kind? {

@@ -66,8 +66,12 @@ enum CSVPrivacyParser {
         let prepared = try prepare(csv: text, accountName: accountName)
         let extractor: PIIExtracting = gemma.map { GemmaPIIExtractor(gemma: $0) }
             ?? HeuristicPIIExtractor()
-        let report = await extractor.extractPII(rows: prepared.piiRows, headers: prepared.headerRow)
-        return makeImport(prepared, text: text, now: now, piiReport: report)
+        let result = await extractor.extract(
+            headers: prepared.headerRow,
+            dataRows: prepared.dataRows,
+            metadataRows: prepared.metadataRows
+        )
+        return makeImport(prepared, text: text, now: now, identity: result)
     }
 
     // Legacy synchronous parse (P4-05). Uses the heuristic PII detector.
@@ -77,20 +81,23 @@ enum CSVPrivacyParser {
         now: Date = .now
     ) throws -> ParsedCSVImport {
         let prepared = try prepare(csv: text, accountName: accountName)
-        let report = HeuristicPIIExtractor().detect(rows: prepared.piiRows, headers: prepared.headerRow)
-        return makeImport(prepared, text: text, now: now, piiReport: report)
+        let result = HeuristicPIIExtractor().detect(
+            headers: prepared.headerRow,
+            dataRows: prepared.dataRows,
+            metadataRows: prepared.metadataRows
+        )
+        return makeImport(prepared, text: text, now: now, identity: result)
     }
 
     // MARK: - Shared pipeline
 
     private struct Prepared {
         let headerRow: [String]
-        let piiRows: [[String]]   // header + data rows, for the PII extractor
+        let dataRows: [[String]]
+        let metadataRows: [[String]]  // non-empty rows above the real header
         let format: BrokerageFormat
         let holdings: [LedgerHolding]
         let resolvedName: String
-        let accountNumber: String?
-        let accountHolder: String?
     }
 
     private static func prepare(csv text: String, accountName: String?) throws -> Prepared {
@@ -98,30 +105,42 @@ enum CSVPrivacyParser {
         guard !trimmed.isEmpty else { throw CSVParserError.empty }
 
         let rows = parseRows(trimmed)
-        guard let headerRow = rows.first(where: { !$0.allSatisfy(\.isEmpty) }) else {
+        guard rows.contains(where: { !$0.allSatisfy(\.isEmpty) }) else {
             throw CSVParserError.empty
         }
-        let normalizedHeaders = headerRow.map(normalize)
-        guard let (format, columnMap) = detectFormat(headers: normalizedHeaders) else {
-            let preview = headerRow.prefix(4).joined(separator: ", ")
+
+        // The real header is the first row that resolves to a known format —
+        // not merely the first non-empty row. Rows above it are metadata (which
+        // may carry PII like a holder name), so they're scanned too.
+        var headerIndex: Int?
+        var detected: (BrokerageFormat, ColumnMap)?
+        for (index, row) in rows.enumerated() where !row.allSatisfy(\.isEmpty) {
+            if let match = detectFormat(headers: row.map(normalize)) {
+                headerIndex = index
+                detected = match
+                break
+            }
+        }
+        guard let headerIndex, let (format, columnMap) = detected else {
+            let preview = (rows.first { !$0.allSatisfy(\.isEmpty) } ?? []).prefix(4).joined(separator: ", ")
             throw CSVParserError.unrecognizedFormat(headerPreview: preview)
         }
 
-        let dataRows = Array(rows.drop(while: { $0 != headerRow }).dropFirst())
+        let headerRow = rows[headerIndex]
+        let metadataRows = rows[..<headerIndex].filter { !$0.allSatisfy(\.isEmpty) }
+        let dataRows = Array(rows[(headerIndex + 1)...])
         let holdings = dataRows.compactMap { extractHolding(from: $0, columnMap: columnMap) }
         guard !holdings.isEmpty else { throw CSVParserError.noValidRows }
 
-        let identity = extractIdentity(dataRows: dataRows, normalizedHeaders: normalizedHeaders)
         let resolvedName = accountName?.nonEmptyTrimmed ?? format.rawValue + " Brokerage"
 
         return Prepared(
             headerRow: headerRow,
-            piiRows: [headerRow] + dataRows,
+            dataRows: dataRows,
+            metadataRows: Array(metadataRows),
             format: format,
             holdings: holdings,
-            resolvedName: resolvedName,
-            accountNumber: identity.account,
-            accountHolder: identity.holder
+            resolvedName: resolvedName
         )
     }
 
@@ -129,16 +148,17 @@ enum CSVPrivacyParser {
         _ prepared: Prepared,
         text: String,
         now: Date,
-        piiReport: PIIReport
+        identity: PIIExtractionResult
     ) -> ParsedCSVImport {
-        // Full PII is retained ONLY on the device-only ledger.
+        // Full PII (from labeled columns, metadata, or Gemma column detection)
+        // is retained ONLY on the device-only ledger.
         let ledger = PrivateLedger(
             accountName: prepared.resolvedName,
             importedAt: now,
             rawCSVDigest: sha256(text),
             sourceBrokerage: prepared.format.rawValue,
-            accountNumber: prepared.accountNumber,
-            accountHolder: prepared.accountHolder,
+            accountNumber: identity.accountNumber,
+            accountHolder: identity.accountHolder,
             holdings: prepared.holdings
         )
         // The shareable profile is built from holdings only — never from the
@@ -148,27 +168,8 @@ enum CSVPrivacyParser {
             ledger: ledger,
             profile: profile,
             format: prepared.format,
-            piiReport: piiReport
+            piiReport: identity.report
         )
-    }
-
-    // Pull the full account number / holder name from labeled columns for the
-    // device-only ledger (distinct from the masked PIIReport).
-    private static func extractIdentity(
-        dataRows: [[String]],
-        normalizedHeaders: [String]
-    ) -> (account: String?, holder: String?) {
-        func firstValue(forAnyOf set: Set<String>) -> String? {
-            guard let col = normalizedHeaders.firstIndex(where: { set.contains($0) }) else { return nil }
-            for row in dataRows where row.indices.contains(col) {
-                let value = row[col].trimmingCharacters(in: .whitespacesAndNewlines)
-                if !value.isEmpty { return value }
-            }
-            return nil
-        }
-        let account = firstValue(forAnyOf: ["accountnumber", "acctnumber", "accountno", "acctno", "accountnum"])
-        let holder = firstValue(forAnyOf: ["accountholder", "accountholdername", "holdername", "holder", "registrationname", "accountowner", "ownername"])
-        return (account, holder)
     }
 
     // MARK: - Format detection

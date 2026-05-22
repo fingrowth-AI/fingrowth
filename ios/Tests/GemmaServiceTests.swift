@@ -208,7 +208,7 @@ final class GemmaServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testClassifyFallsBackToFirstCategory() async {
+    func testClassifyReturnsEmptyOnNoMatch() async {
         let service = GemmaService(
             backend: StubLlamaBackend(responder: { _ in "wholly unrelated noise" }),
             downloader: nil
@@ -217,7 +217,10 @@ final class GemmaServiceTests: XCTestCase {
             prompt: "?",
             categories: ["fundamental", "technical", "general"]
         )
-        XCTAssertEqual(result, "fundamental", "no match → first category")
+        // No match must be reported as undetermined ("") — never a guessed
+        // first category, which would turn a failure into a confident wrong
+        // answer (and false PII detections downstream).
+        XCTAssertEqual(result, "")
     }
 
     func testMatchCategoryRules() {

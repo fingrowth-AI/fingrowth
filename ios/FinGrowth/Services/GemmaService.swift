@@ -191,10 +191,13 @@ final class GemmaService {
 
     /// Classify `prompt` into exactly one of `categories`. Built on `generate`
     /// with a constrained instruction, then mapped to the closest category so a
-    /// chatty model ("This looks Technical.") still resolves cleanly. Falls back
-    /// to the first category when nothing matches.
+    /// chatty model ("This looks Technical.") still resolves cleanly. Returns an
+    /// empty string when the model produces no usable / matching output —
+    /// callers must treat that as "undetermined" and apply their own fallback,
+    /// rather than this silently guessing the first category (which would turn
+    /// an inference failure into a confident wrong answer).
     func classify(prompt: String, categories: [String]) async -> String {
-        guard let first = categories.first else { return "" }
+        guard !categories.isEmpty else { return "" }
         let instruction = """
         Classify the text below into exactly one category.
         Categories: \(categories.joined(separator: ", ")).
@@ -206,7 +209,7 @@ final class GemmaService {
         for await token in generate(prompt: instruction, maxTokens: 16) {
             output += token
         }
-        return Self.matchCategory(output, in: categories) ?? first
+        return Self.matchCategory(output, in: categories) ?? ""
     }
 
     /// Resolve raw model output to one of `categories`: exact match, then

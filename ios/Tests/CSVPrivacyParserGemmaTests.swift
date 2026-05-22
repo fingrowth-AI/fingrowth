@@ -76,6 +76,39 @@ final class CSVPrivacyParserGemmaTests: XCTestCase {
         XCTAssertGreaterThan(try XCTUnwrap(ssns.first).confidence, 0.9)
     }
 
+    // MARK: - Metadata above the table
+
+    func testHolderNameInMetadataAboveHeaderIsDetected() async throws {
+        // Brokerage exports often put account metadata above the holdings table.
+        let csv = """
+        Account Holder,John A. Smith
+        Account Number,X12345678
+
+        Symbol,Quantity,Cost Basis,Security Type
+        AAPL,10,1500,Equity
+        """
+        let result = try await CSVPrivacyParser.parse(csvData: csv)
+
+        XCTAssertEqual(result.format, .schwab)  // resolved past the metadata rows
+        let names = result.piiReport.findings(of: .holderName)
+        XCTAssertGreaterThan(try XCTUnwrap(names.first).confidence, 0.9)
+        // Metadata identity must reach the device-only ledger.
+        XCTAssertEqual(result.ledger.accountHolder, "John A. Smith")
+        XCTAssertEqual(result.ledger.accountNumber, "X12345678")
+        XCTAssertFalse(profileBlob(result.profile).contains("Smith"))
+    }
+
+    // MARK: - Masking
+
+    func testShortValuesAreFullyMasked() {
+        // "Last 4" must not expose the whole value for short inputs.
+        XCTAssertEqual(HeuristicPIIExtractor.mask("X1", kind: .accountNumber), "••")
+        XCTAssertEqual(HeuristicPIIExtractor.mask("1234", kind: .accountNumber), "••••")
+        XCTAssertFalse(HeuristicPIIExtractor.mask("X1", kind: .accountNumber).contains("X"))
+        // Long values still reveal only the last 4.
+        XCTAssertEqual(HeuristicPIIExtractor.mask("12345678", kind: .accountNumber), "••••5678")
+    }
+
     // MARK: - Format coverage (>= 5)
 
     func testVanguardFormatDetected() async throws {
