@@ -71,7 +71,8 @@ struct RootTabView: View {
             if let portfolioStore {
                 PortfolioView(
                     store: portfolioStore,
-                    paperTradePrefill: paperTradePrefill
+                    paperTradePrefill: paperTradePrefill,
+                    gemma: gemma
                 )
             } else {
                 ProgressView()

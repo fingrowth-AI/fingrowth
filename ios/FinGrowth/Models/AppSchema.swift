@@ -289,18 +289,102 @@ enum AppSchemaV3: VersionedSchema {
             PaperTradeRecord.self,
         ]
     }
+
+    // V3 shapes of the imported-portfolio models, pinned so V4 can add the
+    // device-only PII fields (accountNumber / accountHolder) to PrivateLedger
+    // without corrupting the on-disk description of a V3 store. The pair is
+    // pinned together because of their bidirectional relationship.
+    @Model
+    final class PrivateLedger {
+        @Attribute(.unique) var id: UUID
+        var accountName: String
+        var importedAt: Date
+        var rawCSVDigest: String
+        var sourceBrokerage: String?
+        @Relationship(deleteRule: .cascade, inverse: \LedgerHolding.ledger)
+        var holdings: [LedgerHolding]
+
+        init(
+            id: UUID = UUID(),
+            accountName: String,
+            importedAt: Date = .now,
+            rawCSVDigest: String = "",
+            sourceBrokerage: String? = nil,
+            holdings: [LedgerHolding] = []
+        ) {
+            self.id = id
+            self.accountName = accountName
+            self.importedAt = importedAt
+            self.rawCSVDigest = rawCSVDigest
+            self.sourceBrokerage = sourceBrokerage
+            self.holdings = holdings
+        }
+    }
+
+    @Model
+    final class LedgerHolding {
+        var ticker: String
+        var quantity: Double
+        var costBasis: Double
+        var purchaseDate: Date?
+        var accountType: String?
+        var ledger: PrivateLedger?
+
+        init(
+            ticker: String,
+            quantity: Double,
+            costBasis: Double,
+            purchaseDate: Date? = nil,
+            accountType: String? = nil,
+            ledger: PrivateLedger? = nil
+        ) {
+            self.ticker = ticker
+            self.quantity = quantity
+            self.costBasis = costBasis
+            self.purchaseDate = purchaseDate
+            self.accountType = accountType
+            self.ledger = ledger
+        }
+    }
+}
+
+// MARK: - V4 (P5-03 on-device PII extraction)
+
+// V4 adds device-only PII fields to PrivateLedger (accountNumber /
+// accountHolder) captured by the Gemma-powered CSV parser. They never leave
+// the device. The current shapes live in PrivateLedger.swift, so V4 references
+// the live types; the deltas are additive-optional, so V3 → V4 is lightweight.
+enum AppSchemaV4: VersionedSchema {
+    static let versionIdentifier = Schema.Version(4, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            PrivateLedger.self,
+            LedgerHolding.self,
+            ShareableProfile.self,
+            AuditEntry.self,
+            ResearchHistoryEntry.self,
+            PaperTradeRecord.self,
+        ]
+    }
 }
 
 // MARK: - Migration plan
 
 enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self]
+        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4]
     }
+
+    // Additive optional PII columns on PrivateLedger.
+    static let migrateV3toV4 = MigrationStage.lightweight(
+        fromVersion: AppSchemaV3.self,
+        toVersion: AppSchemaV4.self
+    )
 
     // Additive optional columns plus a dropped PortfolioSnapshot table —
     // SwiftData handles both without custom row work.

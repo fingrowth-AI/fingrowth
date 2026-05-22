@@ -14,6 +14,7 @@ import UniformTypeIdentifiers
 struct PortfolioView: View {
     let store: PortfolioStore
     let paperTradePrefill: PaperTradePrefill
+    let gemma: GemmaService
 
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \PrivateLedger.importedAt, order: .reverse)
@@ -189,26 +190,40 @@ struct PortfolioView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            do {
-                let text = try readCSV(at: url)
-                let imported = try CSVPrivacyParser.parse(
-                    csv: text,
-                    accountName: url.deletingPathExtension().lastPathComponent
-                )
-                modelContext.insert(imported.ledger)
-                modelContext.insert(imported.profile)
-                try modelContext.save()
-                lastImportSummary = "Imported \(imported.ledger.holdings.count) holdings from \(imported.format.rawValue)."
-            } catch let error as CSVParserError {
-                csvImportError = error.errorDescription
-            } catch {
-                csvImportError = "Couldn't import CSV: \(error.localizedDescription)"
-            }
+            let accountName = url.deletingPathExtension().lastPathComponent
+            Task { await importCSV(at: url, accountName: accountName) }
         case .failure(let error):
             // User cancellation surfaces here too; suppress to avoid noise.
             if (error as NSError).code != NSUserCancelledError {
                 csvImportError = error.localizedDescription
             }
+        }
+    }
+
+    // Gemma-powered import (P5-03): parses on-device, retains PII only in the
+    // PrivateLedger, and reports how many PII fields were detected and kept off
+    // the cloud.
+    @MainActor
+    private func importCSV(at url: URL, accountName: String) async {
+        do {
+            let text = try readCSV(at: url)
+            let imported = try await CSVPrivacyParser.parse(
+                csvData: text,
+                accountName: accountName,
+                gemma: gemma
+            )
+            modelContext.insert(imported.ledger)
+            modelContext.insert(imported.profile)
+            try modelContext.save()
+            var summary = "Imported \(imported.ledger.holdings.count) holdings from \(imported.format.rawValue)."
+            if imported.piiReport.containsPII {
+                summary += " \(imported.piiReport.findings.count) PII field(s) kept on-device."
+            }
+            lastImportSummary = summary
+        } catch let error as CSVParserError {
+            csvImportError = error.errorDescription
+        } catch {
+            csvImportError = "Couldn't import CSV: \(error.localizedDescription)"
         }
     }
 

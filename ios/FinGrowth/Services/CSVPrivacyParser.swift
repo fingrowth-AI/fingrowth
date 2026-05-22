@@ -36,6 +36,9 @@ struct ParsedCSVImport {
     let ledger: PrivateLedger
     let profile: ShareableProfile
     let format: CSVPrivacyParser.BrokerageFormat
+    // Audit of PII detected at ingestion (P5-03). Empty for the legacy sync
+    // path callers that don't request detection.
+    let piiReport: PIIReport
 }
 
 enum CSVPrivacyParser {
@@ -43,15 +46,54 @@ enum CSVPrivacyParser {
         case fidelity = "Fidelity"
         case schwab = "Charles Schwab"
         case robinhood = "Robinhood"
+        case vanguard = "Vanguard"
+        case etrade = "E*TRADE"
     }
 
-    // MARK: - Public entry point
+    // MARK: - Public entry points
 
+    // Gemma-powered parse (P5-03). Separates a full device-only PrivateLedger
+    // (including PII) from an anonymized ShareableProfile, and returns a
+    // PIIReport of everything detected. Detection uses the on-device model when
+    // available and falls back to the deterministic heuristic detector — the
+    // whole pipeline runs with zero network calls.
+    static func parse(
+        csvData text: String,
+        accountName: String? = nil,
+        gemma: GemmaService? = nil,
+        now: Date = .now
+    ) async throws -> ParsedCSVImport {
+        let prepared = try prepare(csv: text, accountName: accountName)
+        let extractor: PIIExtracting = gemma.map { GemmaPIIExtractor(gemma: $0) }
+            ?? HeuristicPIIExtractor()
+        let report = await extractor.extractPII(rows: prepared.piiRows, headers: prepared.headerRow)
+        return makeImport(prepared, text: text, now: now, piiReport: report)
+    }
+
+    // Legacy synchronous parse (P4-05). Uses the heuristic PII detector.
     static func parse(
         csv text: String,
         accountName: String? = nil,
         now: Date = .now
     ) throws -> ParsedCSVImport {
+        let prepared = try prepare(csv: text, accountName: accountName)
+        let report = HeuristicPIIExtractor().detect(rows: prepared.piiRows, headers: prepared.headerRow)
+        return makeImport(prepared, text: text, now: now, piiReport: report)
+    }
+
+    // MARK: - Shared pipeline
+
+    private struct Prepared {
+        let headerRow: [String]
+        let piiRows: [[String]]   // header + data rows, for the PII extractor
+        let format: BrokerageFormat
+        let holdings: [LedgerHolding]
+        let resolvedName: String
+        let accountNumber: String?
+        let accountHolder: String?
+    }
+
+    private static func prepare(csv text: String, accountName: String?) throws -> Prepared {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw CSVParserError.empty }
 
@@ -65,24 +107,68 @@ enum CSVPrivacyParser {
             throw CSVParserError.unrecognizedFormat(headerPreview: preview)
         }
 
-        let dataRows = rows.drop(while: { $0 != headerRow }).dropFirst()
-        let holdings = dataRows.compactMap { row -> LedgerHolding? in
-            extractHolding(from: row, columnMap: columnMap)
-        }
+        let dataRows = Array(rows.drop(while: { $0 != headerRow }).dropFirst())
+        let holdings = dataRows.compactMap { extractHolding(from: $0, columnMap: columnMap) }
         guard !holdings.isEmpty else { throw CSVParserError.noValidRows }
 
-        let resolvedName = accountName?.nonEmptyTrimmed
-            ?? format.rawValue + " Brokerage"
+        let identity = extractIdentity(dataRows: dataRows, normalizedHeaders: normalizedHeaders)
+        let resolvedName = accountName?.nonEmptyTrimmed ?? format.rawValue + " Brokerage"
 
+        return Prepared(
+            headerRow: headerRow,
+            piiRows: [headerRow] + dataRows,
+            format: format,
+            holdings: holdings,
+            resolvedName: resolvedName,
+            accountNumber: identity.account,
+            accountHolder: identity.holder
+        )
+    }
+
+    private static func makeImport(
+        _ prepared: Prepared,
+        text: String,
+        now: Date,
+        piiReport: PIIReport
+    ) -> ParsedCSVImport {
+        // Full PII is retained ONLY on the device-only ledger.
         let ledger = PrivateLedger(
-            accountName: resolvedName,
+            accountName: prepared.resolvedName,
             importedAt: now,
             rawCSVDigest: sha256(text),
-            sourceBrokerage: format.rawValue,
-            holdings: holdings
+            sourceBrokerage: prepared.format.rawValue,
+            accountNumber: prepared.accountNumber,
+            accountHolder: prepared.accountHolder,
+            holdings: prepared.holdings
         )
-        let profile = makeShareableProfile(from: holdings, now: now)
-        return ParsedCSVImport(ledger: ledger, profile: profile, format: format)
+        // The shareable profile is built from holdings only — never from the
+        // identity fields above — so no PII can leak into it.
+        let profile = makeShareableProfile(from: prepared.holdings, now: now)
+        return ParsedCSVImport(
+            ledger: ledger,
+            profile: profile,
+            format: prepared.format,
+            piiReport: piiReport
+        )
+    }
+
+    // Pull the full account number / holder name from labeled columns for the
+    // device-only ledger (distinct from the masked PIIReport).
+    private static func extractIdentity(
+        dataRows: [[String]],
+        normalizedHeaders: [String]
+    ) -> (account: String?, holder: String?) {
+        func firstValue(forAnyOf set: Set<String>) -> String? {
+            guard let col = normalizedHeaders.firstIndex(where: { set.contains($0) }) else { return nil }
+            for row in dataRows where row.indices.contains(col) {
+                let value = row[col].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty { return value }
+            }
+            return nil
+        }
+        let account = firstValue(forAnyOf: ["accountnumber", "acctnumber", "accountno", "acctno", "accountnum"])
+        let holder = firstValue(forAnyOf: ["accountholder", "accountholdername", "holdername", "holder", "registrationname", "accountowner", "ownername"])
+        return (account, holder)
     }
 
     // MARK: - Format detection
@@ -120,6 +206,17 @@ enum CSVPrivacyParser {
     // Schwab's exports use "Cost Basis" as a total in dollars.
     private static let schwabCostTotalHeaders: Set<String> = ["costbasis"]
     private static let schwabSecurityHeader: Set<String> = ["securitytype"]
+
+    // Vanguard — identified by its "Investment Name" column; cost shipped as a total.
+    private static let vanguardMarkerHeaders: Set<String> = ["investmentname"]
+    private static let vanguardSymbolHeaders: Set<String> = ["symbol"]
+    private static let vanguardQuantityHeaders: Set<String> = ["shares", "quantity"]
+    private static let vanguardCostTotalHeaders: Set<String> = ["costbasis", "totalcost"]
+
+    // E*TRADE — identified by its per-share "Price Paid" column.
+    private static let etradeCostHeaders: Set<String> = ["pricepaid"]
+    private static let etradeSymbolHeaders: Set<String> = ["symbol"]
+    private static let etradeQuantityHeaders: Set<String> = ["quantity", "qty", "shares"]
 
     private static let robinhoodSymbolHeaders: Set<String> = ["symbol", "instrument", "ticker"]
     private static let robinhoodQuantityHeaders: Set<String> = ["quantity", "shares"]
@@ -171,6 +268,35 @@ enum CSVPrivacyParser {
                 quantityIndex: qty,
                 costBasisIndex: cost,
                 costBasisIsTotal: true,
+                purchaseDateIndex: dateIdx,
+                accountTypeIndex: acctIdx
+            ))
+        }
+
+        // Vanguard — discriminated by its "Investment Name" column.
+        if !headerSet.intersection(vanguardMarkerHeaders).isEmpty,
+           let symbol = firstIndex(in: headers, anyOf: vanguardSymbolHeaders),
+           let qty = firstIndex(in: headers, anyOf: vanguardQuantityHeaders),
+           let cost = firstIndex(in: headers, anyOf: vanguardCostTotalHeaders) {
+            return (.vanguard, ColumnMap(
+                symbolIndex: symbol,
+                quantityIndex: qty,
+                costBasisIndex: cost,
+                costBasisIsTotal: true,
+                purchaseDateIndex: dateIdx,
+                accountTypeIndex: acctIdx
+            ))
+        }
+
+        // E*TRADE — discriminated by its per-share "Price Paid" column.
+        if let cost = firstIndex(in: headers, anyOf: etradeCostHeaders),
+           let symbol = firstIndex(in: headers, anyOf: etradeSymbolHeaders),
+           let qty = firstIndex(in: headers, anyOf: etradeQuantityHeaders) {
+            return (.etrade, ColumnMap(
+                symbolIndex: symbol,
+                quantityIndex: qty,
+                costBasisIndex: cost,
+                costBasisIsTotal: false,
                 purchaseDateIndex: dateIdx,
                 accountTypeIndex: acctIdx
             ))

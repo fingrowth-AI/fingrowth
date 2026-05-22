@@ -15,12 +15,14 @@
 		18EE90FD673B58A2B19595DB /* DifferentialPrivacyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E640E6EECDD28A3251E83C82 /* DifferentialPrivacyTests.swift */; };
 		19026D8EA25A5D8A6CBF68B8 /* AuditEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE7EC5B62AD41CA20D3F1EE /* AuditEntry.swift */; };
 		1BCA8756365F01D7CA078B45 /* PrivacyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 441DED836938BFD1B9CA7474 /* PrivacyView.swift */; };
+		1DB663BB289BF2BC5910F82F /* CSVPrivacyParserGemmaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1442139D9F32B9D1420E504A /* CSVPrivacyParserGemmaTests.swift */; };
 		20FF285108A9C8253B38A70D /* QueryRewriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D86C2BFD2F205263C068D0D1 /* QueryRewriter.swift */; };
 		23F1272786E343FFFFEEB9A6 /* ThermalMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F34143077479B0328819FA /* ThermalMonitorTests.swift */; };
 		2732289B772D2DB199C88F99 /* ResearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A27418E9ACE6AE2165327644 /* ResearchView.swift */; };
 		2811CC416181979CEDF51B5E /* ModelDownloadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE9E29459E39FDDE789D1BC8 /* ModelDownloadView.swift */; };
 		294DB2355A46113258B1D3C1 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70907220A5A69575403668B3 /* RootTabView.swift */; };
 		2DADB09D4616C1629DA77421 /* AppContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A923754A966D1F83FC931DB6 /* AppContainer.swift */; };
+		3C7B80A72780104FDF6BDEC4 /* PIIExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFDE7B78F1CF99B05489A41A /* PIIExtractor.swift */; };
 		3D30E09F3F54136533FB5B6B /* AppSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F9343656A9DFC6C27A2DF42 /* AppSchema.swift */; };
 		4F29D99E9827EAD0D239D2EB /* CSVPrivacyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 089AB79048AEAEF9E5813D21 /* CSVPrivacyParser.swift */; };
 		529FAC2517B83E8BE8C49B63 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D5EBDB1E1B6F604AE23AEE /* APIClient.swift */; };
@@ -70,6 +72,7 @@
 		089AB79048AEAEF9E5813D21 /* CSVPrivacyParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSVPrivacyParser.swift; sourceTree = "<group>"; };
 		0A342BC6A3B65965BF13E067 /* AppDataLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDataLocation.swift; sourceTree = "<group>"; };
 		0E739B4C1D34CA02A016D03A /* QueryRewriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueryRewriterTests.swift; sourceTree = "<group>"; };
+		1442139D9F32B9D1420E504A /* CSVPrivacyParserGemmaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSVPrivacyParserGemmaTests.swift; sourceTree = "<group>"; };
 		198A6B6B9353E870FAB7CEE7 /* PrivateLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivateLedger.swift; sourceTree = "<group>"; };
 		1A38C0A35AD998F4C10F8B8E /* PaperTradePrefill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTradePrefill.swift; sourceTree = "<group>"; };
 		1B26674A1FB435D9B0752EE2 /* AnalysisStreamControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisStreamControllerTests.swift; sourceTree = "<group>"; };
@@ -93,6 +96,7 @@
 		9C4380128A82FB5CDB62D549 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		A27418E9ACE6AE2165327644 /* ResearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchView.swift; sourceTree = "<group>"; };
 		A923754A966D1F83FC931DB6 /* AppContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainer.swift; sourceTree = "<group>"; };
+		AFDE7B78F1CF99B05489A41A /* PIIExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PIIExtractor.swift; sourceTree = "<group>"; };
 		B37DE6AF489C1F7CD900338C /* FinGrowthTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FinGrowthTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BAC128C6F034551CA7678D29 /* PaperTrade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTrade.swift; sourceTree = "<group>"; };
 		C3F34143077479B0328819FA /* ThermalMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThermalMonitorTests.swift; sourceTree = "<group>"; };
@@ -163,6 +167,7 @@
 				5949520792D80089A788B0F0 /* APIClientTests.swift */,
 				6F031E428CF3CEB5CB565941 /* AppShellTests.swift */,
 				4B65300994D15D5BD64A8468 /* AuditLogTests.swift */,
+				1442139D9F32B9D1420E504A /* CSVPrivacyParserGemmaTests.swift */,
 				640CF4B2D8C426172DBBB38D /* CSVPrivacyParserTests.swift */,
 				E640E6EECDD28A3251E83C82 /* DifferentialPrivacyTests.swift */,
 				7BDC3EC27889F86113C60055 /* GemmaServiceTests.swift */,
@@ -198,6 +203,7 @@
 				DD5921AC7CC0A5588C3F919E /* LlamaInferenceBackend.swift */,
 				1A38C0A35AD998F4C10F8B8E /* PaperTradePrefill.swift */,
 				8BF1982E6D3245577A734292 /* PaperTradingClient.swift */,
+				AFDE7B78F1CF99B05489A41A /* PIIExtractor.swift */,
 				076DA35D0DC90C95C18D4ED6 /* PortfolioStore.swift */,
 				56CA8FBD5A4D2A5F43978972 /* PrivacyAuditLog.swift */,
 				D86C2BFD2F205263C068D0D1 /* QueryRewriter.swift */,
@@ -293,6 +299,7 @@
 				8B6634E00185D95DE8DB3255 /* AnalysisStreamControllerTests.swift in Sources */,
 				EA762041EAE594693C5B7818 /* AppShellTests.swift in Sources */,
 				AF23C86D9858C8DB00292228 /* AuditLogTests.swift in Sources */,
+				1DB663BB289BF2BC5910F82F /* CSVPrivacyParserGemmaTests.swift in Sources */,
 				168A7AA780AEE5012786B61C /* CSVPrivacyParserTests.swift in Sources */,
 				18EE90FD673B58A2B19595DB /* DifferentialPrivacyTests.swift in Sources */,
 				5B8AD7768245F3E0CA1626B6 /* GemmaServiceTests.swift in Sources */,
@@ -321,6 +328,7 @@
 				98BED71DCCD310885DB99CA4 /* JSONValue.swift in Sources */,
 				5C3C988A74D1CF1E94B32835 /* LlamaInferenceBackend.swift in Sources */,
 				2811CC416181979CEDF51B5E /* ModelDownloadView.swift in Sources */,
+				3C7B80A72780104FDF6BDEC4 /* PIIExtractor.swift in Sources */,
 				06D6C40760C5A4BA348B2038 /* PaperTrade.swift in Sources */,
 				74F53CD8D46BB38E34A535BD /* PaperTradePrefill.swift in Sources */,
 				C6CEF6F40281BE2F335438F0 /* PaperTradingClient.swift in Sources */,

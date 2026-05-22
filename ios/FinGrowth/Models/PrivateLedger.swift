@@ -10,6 +10,11 @@ final class PrivateLedger {
     // Brokerage/source the CSV was recognized as (e.g. "Fidelity"). Optional so
     // pre-V3 rows migrate cleanly; the P4-05 parser stamps it at import time.
     var sourceBrokerage: String?
+    // PII extracted at import (P5-03). These live ONLY here, on-device — they
+    // are never copied into ShareableProfile or sent to the cloud. Optional so
+    // pre-V4 rows migrate cleanly and so imports without these fields are fine.
+    var accountNumber: String?
+    var accountHolder: String?
     // Imported lots. Populated by the CSV parser in P4-05; the Portfolio
     // Holdings view renders these alongside live paper positions (P4-04).
     @Relationship(deleteRule: .cascade, inverse: \LedgerHolding.ledger)
@@ -21,6 +26,8 @@ final class PrivateLedger {
         importedAt: Date = .now,
         rawCSVDigest: String = "",
         sourceBrokerage: String? = nil,
+        accountNumber: String? = nil,
+        accountHolder: String? = nil,
         holdings: [LedgerHolding] = []
     ) {
         self.id = id
@@ -28,6 +35,8 @@ final class PrivateLedger {
         self.importedAt = importedAt
         self.rawCSVDigest = rawCSVDigest
         self.sourceBrokerage = sourceBrokerage
+        self.accountNumber = accountNumber
+        self.accountHolder = accountHolder
         self.holdings = holdings
     }
 }
