@@ -27,6 +27,7 @@ struct ResearchView: View {
     // a stored attribute on PaperTradeRecord.
     @State private var lastPersistedSessionLinkID: UUID?
     @State private var selectedHistoryEntry: ResearchHistoryEntry?
+    @Environment(\.colorScheme) private var colorScheme
 
     // Wire names mirror backend/app/routers/analysis.py — progress frames emit
     // "researching" / "analyzing" / "reviewing" — paired with the label shown
@@ -39,22 +40,26 @@ struct ResearchView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    querySection
-                    if let controller {
-                        progressSection(controller: controller)
-                        resultSection(controller: controller)
-                        if let message = controller.errorMessage {
-                            errorBanner(message: message)
+            ZStack {
+                MarketBackground()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        researchHeader
+                        querySection
+                        if let controller {
+                            progressSection(controller: controller)
+                            resultSection(controller: controller)
+                            if let message = controller.errorMessage {
+                                errorBanner(message: message)
+                            }
                         }
+                        historySection
                     }
-                    historySection
+                    .padding(.horizontal)
+                    .padding(.bottom, 28)
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 24)
             }
-            .background(Color(.systemGroupedBackground))
+            .scrollContentBackground(.hidden)
             .navigationTitle("Research")
             .onAppear { ensureController() }
             .onChange(of: controller?.finalResult) { _, newValue in
@@ -77,12 +82,44 @@ struct ResearchView: View {
 
     // MARK: - Query
 
+    private var researchHeader: some View {
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(FinTheme.accent)
+                        .frame(width: 44, height: 44)
+                        .background(FinTheme.accent.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Research")
+                            .font(.title2.weight(.bold))
+                        Text("Ask, stream, and review market context.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    statusPill("On-device PII", systemImage: "lock.fill", color: FinTheme.mint)
+                    statusPill("Research only", systemImage: "doc.text.magnifyingglass", color: FinTheme.amber)
+                }
+            }
+        }
+        .padding(.top, 8)
+    }
+
     private var querySection: some View {
         Card(title: "Query") {
             VStack(alignment: .leading, spacing: 12) {
                 TextField("Ask a question", text: $query, axis: .vertical)
                     .lineLimit(2...4)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .padding(12)
+                    .background(FinTheme.field(for: colorScheme))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                 tickerField
 
@@ -122,7 +159,11 @@ struct ResearchView: View {
             TextField("Ticker (e.g. AAPL)", text: $ticker)
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .font(.headline.monospaced())
+                .padding(12)
+                .background(FinTheme.field(for: colorScheme))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .onChange(of: ticker) { _, _ in showSuggestions = true }
                 .onSubmit { showSuggestions = false }
 
@@ -165,8 +206,12 @@ struct ResearchView: View {
             }
         }
         .padding(.horizontal, 12)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(FinTheme.panel(for: colorScheme))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(FinTheme.border(for: colorScheme), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var canSubmit: Bool {
@@ -494,16 +539,14 @@ private struct Card<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            content
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(title.uppercased())
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                content
+            }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -529,30 +572,38 @@ private struct ExpandableCard<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
-            } label: {
-                HStack {
-                    Label(title, systemImage: systemImage)
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .foregroundStyle(.secondary)
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+                } label: {
+                    HStack {
+                        Label(title, systemImage: systemImage)
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
 
-            if expanded {
-                content
+                if expanded {
+                    content
+                }
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
+}
+
+private func statusPill(_ title: String, systemImage: String, color: Color) -> some View {
+    Label(title, systemImage: systemImage)
+        .font(.caption.weight(.semibold))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(color.opacity(0.14))
+        .foregroundStyle(color)
+        .clipShape(Capsule())
 }
 
 // MARK: - Section bodies

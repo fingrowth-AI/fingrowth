@@ -27,6 +27,7 @@ struct PortfolioView: View {
     @State private var showCSVImporter: Bool = false
     @State private var csvImportError: String?
     @State private var lastImportSummary: String?
+    @Environment(\.colorScheme) private var colorScheme
 
     enum PortfolioSection: String, CaseIterable, Identifiable {
         case holdings, orders, performance
@@ -42,36 +43,42 @@ struct PortfolioView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                Picker("Section", selection: $section) {
-                    ForEach(PortfolioSection.allCases) { section in
-                        Text(section.title).tag(section)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.top, 8)
+            ZStack {
+                MarketBackground()
+                VStack(spacing: 12) {
+                    portfolioHeader
+                        .padding(.horizontal)
+                        .padding(.top, 8)
 
-                Group {
-                    switch section {
-                    case .holdings:
-                        HoldingsSection(
-                            store: store,
-                            importedLedgers: importedLedgers,
-                            lastImportSummary: lastImportSummary,
-                            onImportCSV: { showCSVImporter = true }
-                        )
-                    case .orders:
-                        OrdersSection(
-                            store: store,
-                            paperTrades: paperTrades,
-                            onTapAnalysis: { selectedTradeForAnalysis = $0 }
-                        )
-                    case .performance:
-                        PerformanceSection(
-                            store: store,
-                            paperTrades: paperTrades
-                        )
+                    Picker("Section", selection: $section) {
+                        ForEach(PortfolioSection.allCases) { section in
+                            Text(section.title).tag(section)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+
+                    Group {
+                        switch section {
+                        case .holdings:
+                            HoldingsSection(
+                                store: store,
+                                importedLedgers: importedLedgers,
+                                lastImportSummary: lastImportSummary,
+                                onImportCSV: { showCSVImporter = true }
+                            )
+                        case .orders:
+                            OrdersSection(
+                                store: store,
+                                paperTrades: paperTrades,
+                                onTapAnalysis: { selectedTradeForAnalysis = $0 }
+                            )
+                        case .performance:
+                            PerformanceSection(
+                                store: store,
+                                paperTrades: paperTrades
+                            )
+                        }
                     }
                 }
             }
@@ -132,6 +139,43 @@ struct PortfolioView: View {
                 Text(message)
             }
         }
+    }
+
+    private var portfolioHeader: some View {
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(FinTheme.accent)
+                        .frame(width: 44, height: 44)
+                        .background(FinTheme.accent.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Portfolio")
+                            .font(.title2.weight(.bold))
+                        Text("Paper positions, private imports, and benchmark context.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    portfolioMetric("Positions", value: "\(store.positions.count)", color: FinTheme.accent)
+                    portfolioMetric("Trades", value: "\(paperTrades.count)", color: FinTheme.mint)
+                    if let value = totalMarketValue {
+                        portfolioMetric("Value", value: formatPrice(value), color: FinTheme.amber)
+                    }
+                }
+            }
+        }
+    }
+
+    private var totalMarketValue: Double? {
+        let values = store.positions.compactMap(\.marketValue)
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +)
     }
 
     // CSV plus a couple of brokerage-export variants. UTType.commaSeparatedText
@@ -232,6 +276,7 @@ private struct HoldingsSection: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
         .overlay(alignment: .top) {
             if case .failed(let message) = store.loadState {
                 LoadErrorBanner(message: message)
@@ -393,6 +438,7 @@ private struct OrdersSection: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
     }
 
     private var emptyMessage: String {
@@ -503,6 +549,7 @@ private struct PerformanceSection: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
     }
 
     fileprivate struct PerformanceSeries {
@@ -841,6 +888,24 @@ private struct LoadErrorBanner: View {
             .foregroundStyle(.red)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
+}
+
+private func portfolioMetric(_ title: String, value: String, color: Color) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+        Text(title.uppercased())
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+        Text(value)
+            .font(.subheadline.monospacedDigit().weight(.bold))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(color.opacity(0.12))
+    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 }
 
 private func formatPrice(_ value: Double) -> String {
