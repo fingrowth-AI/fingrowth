@@ -48,6 +48,21 @@ struct SettingsView: View {
                     }
 
                     Section {
+                        Picker("Shared portfolio detail", selection: $settings.portfolioPrivacyLevel) {
+                            ForEach(PortfolioPrivacyLevel.allCases) { level in
+                                Text(level.title).tag(level)
+                            }
+                        }
+                        Text(settings.portfolioPrivacyLevel.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } header: {
+                        Text("Cloud privacy")
+                    } footer: {
+                        Text("Controls how much generalized portfolio context leaves the device. Raw holdings never do.")
+                    }
+
+                    Section {
                         Label {
                             Text("This is a research tool, not financial advice. Always verify before acting.")
                                 .font(.footnote)

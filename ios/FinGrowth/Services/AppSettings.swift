@@ -31,6 +31,7 @@ final class AppSettings {
     static let backendURLKey = "settings.backend_url"
     static let appearanceKey = "settings.appearance"
     static let onDeviceModelEnabledKey = "settings.on_device_model_enabled"
+    static let portfolioPrivacyLevelKey = "settings.portfolio_privacy_level"
     static let defaultBackendURL = "http://localhost:8000"
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -57,6 +58,14 @@ final class AppSettings {
         }
     }
 
+    // How much portfolio context the Differential Privacy module (P5-05) is
+    // allowed to share with the cloud. Defaults to moderate.
+    var portfolioPrivacyLevel: PortfolioPrivacyLevel {
+        didSet {
+            defaults.set(portfolioPrivacyLevel.rawValue, forKey: Self.portfolioPrivacyLevelKey)
+        }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.backendURL = defaults.string(forKey: Self.backendURLKey) ?? Self.defaultBackendURL
@@ -64,6 +73,9 @@ final class AppSettings {
             .flatMap(AppAppearance.init(rawValue:))
         self.appearance = storedAppearance ?? .system
         self.onDeviceModelEnabled = defaults.bool(forKey: Self.onDeviceModelEnabledKey)
+        let storedPrivacy = defaults.string(forKey: Self.portfolioPrivacyLevelKey)
+            .flatMap(PortfolioPrivacyLevel.init(rawValue:))
+        self.portfolioPrivacyLevel = storedPrivacy ?? .moderate
     }
 
     func resetBackendURL() {
