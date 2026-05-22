@@ -517,16 +517,62 @@ private struct PerformanceSection: View {
     let store: PortfolioStore
     let paperTrades: [PaperTradeRecord]
 
+    @State private var selectedDate: Date?
+    @State private var focus: PerformanceFocus = .portfolio
+
+    private enum PerformanceFocus: String, CaseIterable, Identifiable {
+        case portfolio = "Portfolio"
+        case benchmark = "SPY"
+        case spread = "Spread"
+
+        var id: String { rawValue }
+    }
+
     var body: some View {
         List {
-            Section("Cumulative return vs SPY") {
+            Section {
                 if let chart = chartData {
-                    performanceChart(chart)
-                        .frame(height: 220)
+                    VStack(alignment: .leading, spacing: 16) {
+                        performanceHeader(chart)
+
+                        Picker("Focus", selection: $focus) {
+                            ForEach(PerformanceFocus.allCases) { item in
+                                Text(item.rawValue).tag(item)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+
+                        performanceChart(chart)
+                            .frame(height: 260)
+
+                        chartLegend
+                    }
+                    .padding(.vertical, 4)
                 } else {
                     Text(emptyChartMessage)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Cumulative return")
+            }
+
+            if !allocationData.isEmpty {
+                Section {
+                    allocationChart
+                        .frame(height: allocationChartHeight)
+                    allocationRows
+                } header: {
+                    Text("Open position mix")
+                }
+            }
+
+            if !positionPLData.isEmpty {
+                Section {
+                    positionPLChart
+                        .frame(height: positionPLChartHeight)
+                } header: {
+                    Text("Unrealized P/L")
                 }
             }
 
@@ -552,34 +598,243 @@ private struct PerformanceSection: View {
         .scrollContentBackground(.hidden)
     }
 
-    fileprivate struct PerformanceSeries {
-        var portfolio: [(date: Date, returnPct: Double)]
-        var benchmark: [(date: Date, returnPct: Double)]
+    private struct PerformanceSeries {
+        var portfolio: [ReturnPoint]
+        var benchmark: [ReturnPoint]
+    }
+
+    private struct ReturnPoint: Hashable {
+        var date: Date
+        var returnPct: Double
+        var equity: Double?
+    }
+
+    private struct Snapshot {
+        var date: Date
+        var portfolioReturn: Double
+        var benchmarkReturn: Double?
+
+        var spread: Double? {
+            guard let benchmarkReturn else { return nil }
+            return portfolioReturn - benchmarkReturn
+        }
+    }
+
+    private struct PositionAllocation: Identifiable {
+        var symbol: String
+        var value: Double
+        var weight: Double
+        var id: String { symbol }
+    }
+
+    private struct PositionPL: Identifiable {
+        var symbol: String
+        var value: Double
+        var id: String { symbol }
+    }
+
+    @ViewBuilder
+    private func performanceHeader(_ series: PerformanceSeries) -> some View {
+        let snapshot = selectedSnapshot(in: series)
+        VStack(alignment: .leading, spacing: 12) {
+            if let snapshot {
+                Text(snapshot.date.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                metricTile(
+                    "Portfolio",
+                    value: percentLabel(snapshot?.portfolioReturn ?? latestPortfolioReturn(in: series)),
+                    color: returnColor(snapshot?.portfolioReturn ?? latestPortfolioReturn(in: series))
+                )
+                metricTile(
+                    "SPY",
+                    value: percentLabel(snapshot?.benchmarkReturn ?? latestBenchmarkReturn(in: series)),
+                    color: returnColor(snapshot?.benchmarkReturn ?? latestBenchmarkReturn(in: series))
+                )
+                metricTile(
+                    "Spread",
+                    value: percentLabel(snapshot?.spread ?? latestSpread(in: series)),
+                    color: returnColor(snapshot?.spread ?? latestSpread(in: series))
+                )
+            }
+        }
     }
 
     @ViewBuilder
     private func performanceChart(_ series: PerformanceSeries) -> some View {
         Chart {
-            ForEach(Array(series.portfolio.enumerated()), id: \.offset) { _, point in
-                LineMark(
-                    x: .value("Date", point.date),
-                    y: .value("Return %", point.returnPct),
-                    series: .value("Series", "Portfolio")
-                )
-                .foregroundStyle(by: .value("Series", "Portfolio"))
+            if focus != .benchmark {
+                ForEach(series.portfolio, id: \.self) { point in
+                    AreaMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("Baseline", 0),
+                        yEnd: .value("Return", point.returnPct)
+                    )
+                    .foregroundStyle(FinTheme.accent.opacity(focus == .portfolio ? 0.18 : 0.08))
+                    .interpolationMethod(.catmullRom)
+
+                    LineMark(
+                        x: .value("Date", point.date),
+                        y: .value("Return", point.returnPct),
+                        series: .value("Series", "Portfolio")
+                    )
+                    .foregroundStyle(FinTheme.accent)
+                    .lineStyle(StrokeStyle(lineWidth: focus == .portfolio ? 3 : 2))
+                    .interpolationMethod(.catmullRom)
+                }
             }
-            ForEach(Array(series.benchmark.enumerated()), id: \.offset) { _, point in
-                LineMark(
-                    x: .value("Date", point.date),
-                    y: .value("Return %", point.returnPct),
-                    series: .value("Series", "SPY")
+
+            if focus != .portfolio {
+                ForEach(series.benchmark, id: \.self) { point in
+                    LineMark(
+                        x: .value("Date", point.date),
+                        y: .value("Return", point.returnPct),
+                        series: .value("Series", "SPY")
+                    )
+                    .foregroundStyle(.secondary)
+                    .lineStyle(StrokeStyle(lineWidth: focus == .benchmark ? 3 : 2, dash: [5, 4]))
+                    .interpolationMethod(.catmullRom)
+                }
+            }
+
+            if focus == .spread {
+                ForEach(spreadPoints(in: series), id: \.self) { point in
+                    LineMark(
+                        x: .value("Date", point.date),
+                        y: .value("Spread", point.returnPct),
+                        series: .value("Series", "Spread")
+                    )
+                    .foregroundStyle(FinTheme.amber)
+                    .lineStyle(StrokeStyle(lineWidth: 3))
+                    .interpolationMethod(.catmullRom)
+                }
+            }
+
+            RuleMark(y: .value("Break even", 0))
+                .foregroundStyle(.secondary.opacity(0.35))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+
+            if let snapshot = selectedSnapshot(in: series) {
+                RuleMark(x: .value("Selected date", snapshot.date))
+                    .foregroundStyle(.secondary.opacity(0.35))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+
+                PointMark(
+                    x: .value("Selected date", snapshot.date),
+                    y: .value("Portfolio return", snapshot.portfolioReturn)
                 )
-                .foregroundStyle(by: .value("Series", "SPY"))
+                .foregroundStyle(FinTheme.accent)
+                .symbolSize(48)
+
+                if let benchmarkReturn = snapshot.benchmarkReturn, focus != .portfolio {
+                    PointMark(
+                        x: .value("Selected date", snapshot.date),
+                        y: .value("SPY return", benchmarkReturn)
+                    )
+                    .foregroundStyle(.secondary)
+                    .symbolSize(42)
+                }
             }
         }
-        .chartYAxisLabel("% return")
+        .chartXSelection(value: $selectedDate)
+        .chartYAxis {
+            AxisMarks(position: .leading) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let pct = value.as(Double.self) {
+                        Text(percentLabel(pct))
+                    }
+                }
+            }
+        }
         .chartXAxis {
-            AxisMarks(values: .stride(by: .day, count: 7))
+            AxisMarks(values: .automatic(desiredCount: 4)) {
+                AxisGridLine()
+                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+            }
+        }
+    }
+
+    private var chartLegend: some View {
+        HStack(spacing: 14) {
+            legendItem("Portfolio", color: FinTheme.accent)
+            legendItem("SPY", color: .secondary)
+            if focus == .spread {
+                legendItem("Spread", color: FinTheme.amber)
+            }
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+    }
+
+    private var allocationChart: some View {
+        Chart(allocationData) { item in
+            BarMark(
+                x: .value("Market value", item.value),
+                y: .value("Symbol", item.symbol)
+            )
+            .foregroundStyle(FinTheme.accent)
+            .annotation(position: .trailing) {
+                Text(weightLabel(item.weight))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .chartXAxis {
+            AxisMarks(position: .bottom) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let number = value.as(Double.self) {
+                        Text(shortCurrency(number))
+                    }
+                }
+            }
+        }
+    }
+
+    private var allocationRows: some View {
+        VStack(spacing: 8) {
+            ForEach(allocationData) { item in
+                HStack {
+                    Text(item.symbol)
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Text(formatPrice(item.value))
+                        .font(.caption.monospacedDigit())
+                    Text(weightLabel(item.weight))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 64, alignment: .trailing)
+                }
+            }
+        }
+    }
+
+    private var positionPLChart: some View {
+        Chart(positionPLData) { item in
+            BarMark(
+                x: .value("Unrealized P/L", item.value),
+                y: .value("Symbol", item.symbol)
+            )
+            .foregroundStyle(item.value >= 0 ? FinTheme.accent : FinTheme.danger)
+            .annotation(position: item.value >= 0 ? .trailing : .leading) {
+                Text(plLabel(item.value))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(item.value >= 0 ? FinTheme.accent : FinTheme.danger)
+            }
+        }
+        .chartXAxis {
+            AxisMarks(position: .bottom) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let number = value.as(Double.self) {
+                        Text(shortCurrency(number))
+                    }
+                }
+            }
         }
     }
 
@@ -604,9 +859,15 @@ private struct PerformanceSection: View {
         // sample if it's missing/zero.
         let baseEquity = history.baseValue > 0 ? history.baseValue : datedEquity.first?.equity ?? 0
         guard baseEquity > 0 else { return nil }
-        let portfolioCurve = datedEquity.map { ($0.date, ($0.equity / baseEquity - 1) * 100) }
+        let portfolioCurve = datedEquity.map {
+            ReturnPoint(
+                date: $0.date,
+                returnPct: ($0.equity / baseEquity - 1) * 100,
+                equity: $0.equity
+            )
+        }
 
-        var benchPoints: [(date: Date, returnPct: Double)] = []
+        var benchPoints: [ReturnPoint] = []
         if let benchmark = store.benchmark, !benchmark.points.isEmpty {
             let dated: [(Date, Double)] = benchmark.points.compactMap { p in
                 guard let date = formatter.date(from: p.date) else { return nil }
@@ -616,10 +877,54 @@ private struct PerformanceSection: View {
                baseline > 0 {
                 benchPoints = dated
                     .filter { $0.0 >= baselineDate }
-                    .map { ($0.0, ($0.1 / baseline - 1) * 100) }
+                    .map {
+                        ReturnPoint(
+                            date: $0.0,
+                            returnPct: ($0.1 / baseline - 1) * 100,
+                            equity: nil
+                        )
+                    }
             }
         }
         return PerformanceSeries(portfolio: portfolioCurve, benchmark: benchPoints)
+    }
+
+    private var allocationData: [PositionAllocation] {
+        let valued = store.positions.compactMap { position -> (symbol: String, value: Double)? in
+            guard let value = position.marketValue, value > 0 else { return nil }
+            return (position.symbol, value)
+        }
+        let total = valued.reduce(0) { $0 + $1.value }
+        guard total > 0 else { return [] }
+        return valued
+            .sorted { $0.value > $1.value }
+            .prefix(8)
+            .map {
+                PositionAllocation(
+                    symbol: $0.symbol,
+                    value: $0.value,
+                    weight: ($0.value / total) * 100
+                )
+            }
+    }
+
+    private var positionPLData: [PositionPL] {
+        store.positions
+            .compactMap { position -> PositionPL? in
+                guard let value = position.unrealizedPl else { return nil }
+                return PositionPL(symbol: position.symbol, value: value)
+            }
+            .sorted { abs($0.value) > abs($1.value) }
+            .prefix(8)
+            .map { $0 }
+    }
+
+    private var allocationChartHeight: CGFloat {
+        CGFloat(max(180, allocationData.count * 34))
+    }
+
+    private var positionPLChartHeight: CGFloat {
+        CGFloat(max(180, positionPLData.count * 34))
     }
 
     private var emptyChartMessage: String {
@@ -642,6 +947,55 @@ private struct PerformanceSection: View {
         return values.reduce(0, +)
     }
 
+    private func selectedSnapshot(in series: PerformanceSeries) -> Snapshot? {
+        let targetDate = selectedDate ?? series.portfolio.last?.date
+        guard let targetDate,
+              let portfolioPoint = nearestPoint(to: targetDate, in: series.portfolio)
+        else {
+            return nil
+        }
+        let benchmarkPoint = nearestPoint(to: portfolioPoint.date, in: series.benchmark)
+        return Snapshot(
+            date: portfolioPoint.date,
+            portfolioReturn: portfolioPoint.returnPct,
+            benchmarkReturn: benchmarkPoint?.returnPct
+        )
+    }
+
+    private func latestPortfolioReturn(in series: PerformanceSeries) -> Double? {
+        series.portfolio.last?.returnPct
+    }
+
+    private func latestBenchmarkReturn(in series: PerformanceSeries) -> Double? {
+        series.benchmark.last?.returnPct
+    }
+
+    private func latestSpread(in series: PerformanceSeries) -> Double? {
+        guard let portfolio = latestPortfolioReturn(in: series),
+              let benchmark = latestBenchmarkReturn(in: series)
+        else {
+            return nil
+        }
+        return portfolio - benchmark
+    }
+
+    private func spreadPoints(in series: PerformanceSeries) -> [ReturnPoint] {
+        series.portfolio.compactMap { point in
+            guard let benchmark = nearestPoint(to: point.date, in: series.benchmark) else { return nil }
+            return ReturnPoint(
+                date: point.date,
+                returnPct: point.returnPct - benchmark.returnPct,
+                equity: nil
+            )
+        }
+    }
+
+    private func nearestPoint(to date: Date, in points: [ReturnPoint]) -> ReturnPoint? {
+        points.min {
+            abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
+        }
+    }
+
     private func statRow(label: String, value: String, valueColor: Color? = nil) -> some View {
         HStack {
             Text(label)
@@ -650,6 +1004,61 @@ private struct PerformanceSection: View {
                 .font(.subheadline.monospacedDigit().weight(.medium))
                 .foregroundStyle(valueColor ?? .primary)
         }
+    }
+
+    private func metricTile(_ title: String, value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline.monospacedDigit().weight(.bold))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func legendItem(_ label: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(label)
+        }
+    }
+
+    private func percentLabel(_ value: Double?) -> String {
+        guard let value else { return "--" }
+        let sign = value > 0 ? "+" : ""
+        return sign + String(format: "%.2f%%", value)
+    }
+
+    private func weightLabel(_ value: Double) -> String {
+        String(format: "%.1f%%", value)
+    }
+
+    private func returnColor(_ value: Double?) -> Color {
+        guard let value else { return .secondary }
+        if value > 0 { return FinTheme.accent }
+        if value < 0 { return FinTheme.danger }
+        return .secondary
+    }
+
+    private func shortCurrency(_ value: Double) -> String {
+        let absValue = abs(value)
+        let sign = value < 0 ? "-" : ""
+        if absValue >= 1_000_000 {
+            return sign + String(format: "$%.1fM", absValue / 1_000_000)
+        }
+        if absValue >= 1_000 {
+            return sign + String(format: "$%.1fK", absValue / 1_000)
+        }
+        return sign + String(format: "$%.0f", absValue)
     }
 }
 
