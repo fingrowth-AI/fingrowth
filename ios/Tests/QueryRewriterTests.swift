@@ -82,6 +82,51 @@ final class QueryRewriterTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 3)
     }
 
+    func testScrubsAllOccurrencesOfLedgerPII() async {
+        let ledger = PrivateLedger(accountName: "Brokerage", accountNumber: "X12345678")
+        let result = await QueryRewriter().rewrite(
+            query: "Compare X12345678 with account X12345678 balance.",
+            ledger: ledger
+        )
+        XCTAssertFalse(result.rewrittenText.contains("X12345678"), "every occurrence must be scrubbed")
+    }
+
+    func testSmallShareCountIsNotConcentrated() async {
+        let result = await QueryRewriter().rewrite(query: "Should I trim my 5 shares of AAPL?")
+        let quantity = result.substitutions.first { $0.type == .quantity }
+        XCTAssertEqual(quantity?.replacement, "a position")
+        XCTAssertFalse(result.rewrittenText.contains("concentrated"))
+        XCTAssertFalse(result.rewrittenText.contains("5 shares"))
+    }
+
+    func testPublicMarketDollarFactPassesThrough() async {
+        // A non-personal dollar figure must not be scrubbed.
+        let clean = "What happened after Apple's $110B buyback?"
+        let result = await QueryRewriter().rewrite(query: clean)
+        XCTAssertEqual(result.rewrittenText, clean)
+        XCTAssertTrue(result.substitutions.isEmpty)
+    }
+
+    func testPersonalBalanceIsGeneralized() async {
+        let result = await QueryRewriter().rewrite(query: "Is my $250K portfolio too concentrated?")
+        XCTAssertFalse(result.rewrittenText.contains("250K"))
+        XCTAssertFalse(result.substitutions.filter { $0.type == .amount }.isEmpty)
+    }
+
+    func testParaphraseSafetyRejectsResidualSpecifics() async {
+        // Build substitutions from the concentrated query, then check the safety
+        // gate the way the real-Gemma path would.
+        let result = await QueryRewriter().rewrite(query: concentratedQuery)
+        let subs = result.substitutions
+        // A paraphrase that still contains a stripped number/amount is unsafe …
+        XCTAssertFalse(QueryRewriter.isSafe("Should I sell given $280 cost?", substitutions: subs, ledger: nil))
+        // … even a partial brokerage leak ("Fidelity portfolio") is caught.
+        let brokerage = await QueryRewriter().rewrite(query: "How is my Fidelity account doing?")
+        XCTAssertFalse(QueryRewriter.isSafe("How is my Fidelity portfolio doing?", substitutions: brokerage.substitutions, ledger: nil))
+        // A clean generalization is safe.
+        XCTAssertTrue(QueryRewriter.isSafe("Analyze a concentrated TSLA position for a debt-burdened investor", substitutions: subs, ledger: nil))
+    }
+
     @MainActor
     func testStubGemmaUsesDeterministicResult() async {
         // A stub-backed GemmaService (usesRealModel == false) must not change
