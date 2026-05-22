@@ -11,6 +11,13 @@ struct RootTabView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var portfolioStore: PortfolioStore?
 
+    // The thermal banner is only meaningful when real on-device inference can
+    // actually run: the user enabled it and the linked backend is the real
+    // model (not the development stub).
+    private var onDeviceModelActive: Bool {
+        settings.onDeviceModelEnabled && gemma.usesRealModel
+    }
+
     var body: some View {
         TabView(selection: $selection) {
             ForEach(RootTab.allCases) { tab in
@@ -21,6 +28,17 @@ struct RootTabView: View {
         }
         .tint(FinTheme.accent)
         .preferredColorScheme(settings.appearance.colorScheme)
+        // App-wide thermal warning (P5-02): only when on-device AI is actually
+        // enabled and using the real model — a hot device shouldn't claim AI is
+        // throttled when nothing on-device is running (disabled or dev stub).
+        .overlay(alignment: .top) {
+            if onDeviceModelActive, let message = gemma.thermal.warningMessage {
+                ThermalWarningBanner(message: message)
+                    .padding(.horizontal)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut, value: gemma.thermal.warningMessage)
         .onAppear {
             if portfolioStore == nil {
                 portfolioStore = PortfolioStore(
@@ -102,6 +120,28 @@ struct MarketBackground: View {
     var body: some View {
         FinTheme.page(for: colorScheme)
         .ignoresSafeArea()
+    }
+}
+
+struct ThermalWarningBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "thermometer.high")
+                .foregroundStyle(.white)
+            Text(message)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(FinTheme.amber)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(radius: 4, y: 2)
+        .accessibilityElement(children: .combine)
     }
 }
 

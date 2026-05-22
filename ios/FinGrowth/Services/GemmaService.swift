@@ -29,6 +29,10 @@ final class GemmaService {
 
     private(set) var state: ModelState = .notReady
 
+    // Thermal policy for inference (P5-02): clamps the token budget and queues
+    // work when the device runs hot. Exposed so the UI can show a warning.
+    let thermal: ThermalMonitor
+
     private let backend: LlamaInferenceBackend
     private let downloader: GemmaModelDownloader?
     private let defaultMaxTokens: Int
@@ -37,10 +41,14 @@ final class GemmaService {
     init(
         backend: LlamaInferenceBackend = GemmaService.makeDefaultBackend(),
         downloader: GemmaModelDownloader? = try? GemmaModelDownloader(),
+        thermal: ThermalMonitor? = nil,
         defaultMaxTokens: Int = 512
     ) {
         self.backend = backend
         self.downloader = downloader
+        // Construct here rather than as a default arg: ThermalMonitor is
+        // @MainActor and this init already is, so it's valid here.
+        self.thermal = thermal ?? ThermalMonitor()
         self.defaultMaxTokens = defaultMaxTokens
     }
 
@@ -149,10 +157,23 @@ final class GemmaService {
     /// thread is never blocked; a backend error finishes the stream and flips
     /// `state` to `.failed`.
     func generate(prompt: String, maxTokens: Int? = nil) -> AsyncStream<String> {
-        let cap = maxTokens ?? defaultMaxTokens
+        let baseCap = maxTokens ?? defaultMaxTokens
         let backend = self.backend
+        let thermal = self.thermal
         return AsyncStream { continuation in
             let task = Task.detached {
+                // Queue while the device is too hot (above .serious); resume
+                // once it cools to .nominal. awaitClearance also returns when
+                // the request is cancelled, so re-check before touching the
+                // backend — a cancelled queued request must not start inference.
+                await thermal.awaitClearance()
+                if Task.isCancelled {
+                    continuation.finish()
+                    return
+                }
+                // Clamp the token budget to the current thermal state
+                // (512 → 128 at .serious).
+                let cap = await thermal.recommendedMaxTokens(base: baseCap)
                 do {
                     for try await token in backend.generate(prompt: prompt, maxTokens: cap) {
                         continuation.yield(token)
