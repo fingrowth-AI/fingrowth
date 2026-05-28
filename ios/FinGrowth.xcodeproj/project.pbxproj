@@ -24,6 +24,7 @@
 		2DADB09D4616C1629DA77421 /* AppContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A923754A966D1F83FC931DB6 /* AppContainer.swift */; };
 		3C7B80A72780104FDF6BDEC4 /* PIIExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFDE7B78F1CF99B05489A41A /* PIIExtractor.swift */; };
 		3D30E09F3F54136533FB5B6B /* AppSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F9343656A9DFC6C27A2DF42 /* AppSchema.swift */; };
+		4988FCA29B9110A17C6D5E4B /* PrivacyAuditLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93E54EC1B36614D39A367FD8 /* PrivacyAuditLogTests.swift */; };
 		4F29D99E9827EAD0D239D2EB /* CSVPrivacyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 089AB79048AEAEF9E5813D21 /* CSVPrivacyParser.swift */; };
 		529FAC2517B83E8BE8C49B63 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D5EBDB1E1B6F604AE23AEE /* APIClient.swift */; };
 		54416B2EE3B67DCE91C545C3 /* PortfolioStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 076DA35D0DC90C95C18D4ED6 /* PortfolioStore.swift */; };
@@ -93,6 +94,7 @@
 		7BDC3EC27889F86113C60055 /* GemmaServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GemmaServiceTests.swift; sourceTree = "<group>"; };
 		8BE7EC5B62AD41CA20D3F1EE /* AuditEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditEntry.swift; sourceTree = "<group>"; };
 		8BF1982E6D3245577A734292 /* PaperTradingClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTradingClient.swift; sourceTree = "<group>"; };
+		93E54EC1B36614D39A367FD8 /* PrivacyAuditLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyAuditLogTests.swift; sourceTree = "<group>"; };
 		9C4380128A82FB5CDB62D549 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		A27418E9ACE6AE2165327644 /* ResearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchView.swift; sourceTree = "<group>"; };
 		A923754A966D1F83FC931DB6 /* AppContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainer.swift; sourceTree = "<group>"; };
@@ -171,6 +173,7 @@
 				640CF4B2D8C426172DBBB38D /* CSVPrivacyParserTests.swift */,
 				E640E6EECDD28A3251E83C82 /* DifferentialPrivacyTests.swift */,
 				7BDC3EC27889F86113C60055 /* GemmaServiceTests.swift */,
+				93E54EC1B36614D39A367FD8 /* PrivacyAuditLogTests.swift */,
 				0E739B4C1D34CA02A016D03A /* QueryRewriterTests.swift */,
 				C3F34143077479B0328819FA /* ThermalMonitorTests.swift */,
 			);
@@ -303,6 +306,7 @@
 				168A7AA780AEE5012786B61C /* CSVPrivacyParserTests.swift in Sources */,
 				18EE90FD673B58A2B19595DB /* DifferentialPrivacyTests.swift in Sources */,
 				5B8AD7768245F3E0CA1626B6 /* GemmaServiceTests.swift in Sources */,
+				4988FCA29B9110A17C6D5E4B /* PrivacyAuditLogTests.swift in Sources */,
 				DC932C77BA806F005036800B /* QueryRewriterTests.swift in Sources */,
 				23F1272786E343FFFFEEB9A6 /* ThermalMonitorTests.swift in Sources */,
 			);

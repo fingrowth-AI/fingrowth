@@ -152,6 +152,35 @@ enum AppSchemaV2: VersionedSchema {
         ]
     }
 
+    // Pinned pre-V6 AuditEntry shape (no privacy fields). V2–V5 shipped this
+    // shape, so they reference AppSchemaV2.AuditEntry; only V6 adds the privacy
+    // columns (originalQuery, substitutionsJSON, …).
+    @Model
+    final class AuditEntry {
+        @Attribute(.unique) var id: UUID
+        var timestamp: Date
+        var endpoint: String
+        var direction: String
+        var payloadDigest: String
+        var summary: String
+
+        init(
+            id: UUID = UUID(),
+            timestamp: Date = .now,
+            endpoint: String,
+            direction: String,
+            payloadDigest: String,
+            summary: String = ""
+        ) {
+            self.id = id
+            self.timestamp = timestamp
+            self.endpoint = endpoint
+            self.direction = direction
+            self.payloadDigest = payloadDigest
+            self.summary = summary
+        }
+    }
+
     // Pinned pre-V5 ShareableProfile shape (no positionSizeBucketsJSON). V2–V4
     // all shipped this shape, so they reference AppSchemaV2.ShareableProfile;
     // only V5 adds the position-buckets column.
@@ -310,7 +339,7 @@ enum AppSchemaV3: VersionedSchema {
             PrivateLedger.self,
             LedgerHolding.self,
             AppSchemaV2.ShareableProfile.self,
-            AuditEntry.self,
+            AppSchemaV2.AuditEntry.self,
             ResearchHistoryEntry.self,
             PaperTradeRecord.self,
         ]
@@ -388,7 +417,7 @@ enum AppSchemaV4: VersionedSchema {
             PrivateLedger.self,
             LedgerHolding.self,
             AppSchemaV2.ShareableProfile.self,
-            AuditEntry.self,
+            AppSchemaV2.AuditEntry.self,
             ResearchHistoryEntry.self,
             PaperTradeRecord.self,
         ]
@@ -409,6 +438,27 @@ enum AppSchemaV5: VersionedSchema {
             PrivateLedger.self,
             LedgerHolding.self,
             ShareableProfile.self,
+            AppSchemaV2.AuditEntry.self,
+            ResearchHistoryEntry.self,
+            PaperTradeRecord.self,
+        ]
+    }
+}
+
+// MARK: - V6 (P5-06 privacy audit fields on AuditEntry)
+
+// V6 adds the privacy-audit columns to AuditEntry (originalQuery,
+// rewrittenQuery, substitutionsJSON, generalizationLevel, piiDetectedJSON,
+// confidenceScore). The live AuditEntry is the current (V6) shape;
+// additive-optional, so V5 → V6 is lightweight.
+enum AppSchemaV6: VersionedSchema {
+    static let versionIdentifier = Schema.Version(6, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            PrivateLedger.self,
+            LedgerHolding.self,
+            ShareableProfile.self,
             AuditEntry.self,
             ResearchHistoryEntry.self,
             PaperTradeRecord.self,
@@ -420,12 +470,18 @@ enum AppSchemaV5: VersionedSchema {
 
 enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self, AppSchemaV5.self]
+        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self, AppSchemaV5.self, AppSchemaV6.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6]
     }
+
+    // Additive optional privacy-audit columns on AuditEntry.
+    static let migrateV5toV6 = MigrationStage.lightweight(
+        fromVersion: AppSchemaV5.self,
+        toVersion: AppSchemaV6.self
+    )
 
     // Additive optional positionSizeBucketsJSON column on ShareableProfile.
     static let migrateV4toV5 = MigrationStage.lightweight(

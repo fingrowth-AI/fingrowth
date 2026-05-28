@@ -10,10 +10,13 @@ struct ResearchView: View {
     let apiClient: APIClient
     let paperTradePrefill: PaperTradePrefill
     let onSwitchToPortfolio: () -> Void
+    let gemma: GemmaService
 
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \ResearchHistoryEntry.createdAt, order: .reverse)
     private var history: [ResearchHistoryEntry]
+    @Query(sort: \PrivateLedger.importedAt, order: .reverse)
+    private var ledgers: [PrivateLedger]
 
     @State private var controller: AnalysisStreamController?
     @State private var query: String = ""
@@ -463,12 +466,41 @@ struct ResearchView: View {
         // trade" button must not attach a trade to a stale session.
         lastPersistedSessionID = nil
         lastPersistedSessionLinkID = nil
-        let request = AnalysisQuery(
-            query: query.trimmingCharacters(in: .whitespaces),
-            ticker: ticker.trimmingCharacters(in: .whitespaces).uppercased(),
-            analysisType: analysisType
-        )
-        controller?.start(query: request)
+
+        let rawQuery = query.trimmingCharacters(in: .whitespaces)
+        let tickerSymbol = ticker.trimmingCharacters(in: .whitespaces).uppercased()
+        let type = analysisType
+        let context = modelContext
+        let rewriter = QueryRewriter(gemma: gemma)
+        let ledger = ledgers.first
+
+        // Rewrite ON-DEVICE *before* anything leaves the device, then send the
+        // rewritten text — so the cloud (and the audit log) only ever see the
+        // generalized query. The ticker symbol is public, not PII.
+        Task { @MainActor in
+            let rewritten = await rewriter.rewrite(query: rawQuery, ledger: ledger)
+
+            // Record exactly one audit entry of what is actually sent. Recording
+            // before transmission keeps the log honest even if the stream fails.
+            do {
+                try PrivacyAuditLog(context: context).record(
+                    original: rawQuery,
+                    rewritten: rewritten.rewrittenText,
+                    profile: nil,  // generalized portfolio context is wired in P5-08
+                    substitutions: rewritten.substitutions,
+                    confidence: rewritten.confidenceScore
+                )
+            } catch {
+                assertionFailure("Privacy audit failed to persist: \(error)")
+            }
+
+            let request = AnalysisQuery(
+                query: rewritten.rewrittenText,
+                ticker: tickerSymbol,
+                analysisType: type
+            )
+            controller?.start(query: request)
+        }
     }
 
     private func persistIfNeeded(_ response: AnalysisResponse?) {

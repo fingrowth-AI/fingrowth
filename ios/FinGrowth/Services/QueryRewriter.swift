@@ -12,8 +12,8 @@ import Foundation
 // when a real on-device Gemma model is loaded it can supply a smoother
 // paraphrase, accepted only if it doesn't reintroduce any substituted specific.
 
-struct QuerySubstitution: Equatable, Sendable {
-    enum Kind: String, Sendable {
+struct QuerySubstitution: Equatable, Sendable, Codable {
+    enum Kind: String, Sendable, Codable {
         case quantity
         case costBasis
         case amount

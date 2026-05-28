@@ -65,7 +65,8 @@ struct RootTabView: View {
             ResearchView(
                 apiClient: apiClient,
                 paperTradePrefill: paperTradePrefill,
-                onSwitchToPortfolio: { selection = .portfolio }
+                onSwitchToPortfolio: { selection = .portfolio },
+                gemma: gemma
             )
         case .portfolio:
             if let portfolioStore {
