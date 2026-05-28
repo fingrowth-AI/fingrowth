@@ -30,6 +30,7 @@ struct ResearchView: View {
     // a stored attribute on PaperTradeRecord.
     @State private var lastPersistedSessionLinkID: UUID?
     @State private var selectedHistoryEntry: ResearchHistoryEntry?
+    @State private var auditErrorMessage: String?
     @Environment(\.colorScheme) private var colorScheme
 
     // Wire names mirror backend/app/routers/analysis.py — progress frames emit
@@ -49,6 +50,9 @@ struct ResearchView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         researchHeader
                         querySection
+                        if let auditErrorMessage {
+                            errorBanner(message: auditErrorMessage)
+                        }
                         if let controller {
                             progressSection(controller: controller)
                             resultSection(controller: controller)
@@ -461,6 +465,7 @@ struct ResearchView: View {
     private func run() {
         ensureController()
         showSuggestions = false
+        auditErrorMessage = nil
         // Drop any link to the previous analysis. persistIfNeeded reassigns
         // these once the new result is saved; until then the "Test with paper
         // trade" button must not attach a trade to a stale session.
@@ -482,6 +487,9 @@ struct ResearchView: View {
 
             // Record exactly one audit entry of what is actually sent. Recording
             // before transmission keeps the log honest even if the stream fails.
+            // If persistence fails, abort: the strict invariant is that every
+            // cloud call corresponds to exactly one AuditEntry, so an unlogged
+            // request must not leave the device.
             do {
                 try PrivacyAuditLog(context: context).record(
                     original: rawQuery,
@@ -492,6 +500,8 @@ struct ResearchView: View {
                 )
             } catch {
                 assertionFailure("Privacy audit failed to persist: \(error)")
+                auditErrorMessage = "Couldn't record this request in the Privacy Audit Log, so it wasn't sent. Please try again."
+                return
             }
 
             let request = AnalysisQuery(
