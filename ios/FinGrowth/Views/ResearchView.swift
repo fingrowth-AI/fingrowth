@@ -42,6 +42,9 @@ struct ResearchView: View {
     @State private var selectedHistoryEntry: ResearchHistoryEntry?
     @State private var auditErrorMessage: String?
     @State private var localOnlyMessage: String?
+    // P5-08: holdings-specific context mapped on-device from a cloud result.
+    // Additive — rendered as its own section, never edited into the analysis.
+    @State private var enrichedContext: PersonalizedContext?
     @Environment(\.colorScheme) private var colorScheme
 
     // Wire names mirror backend/app/routers/analysis.py — progress frames emit
@@ -85,6 +88,7 @@ struct ResearchView: View {
             .onAppear { ensureController() }
             .onChange(of: controller?.finalResult) { _, newValue in
                 persistIfNeeded(newValue)
+                recontextualize(newValue)
             }
             .sheet(item: $selectedHistoryEntry) { entry in
                 HistoryDetailSheet(entry: entry) { ticker in
@@ -368,6 +372,10 @@ struct ResearchView: View {
                     RiskReviewView(review: final.riskReview)
                 }
 
+                if let enrichedContext {
+                    personalizedContextSection(enrichedContext)
+                }
+
                 Text(final.disclaimer)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -424,6 +432,26 @@ struct ResearchView: View {
             .background(FinTheme.mint.opacity(0.12))
             .foregroundStyle(FinTheme.mint)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    // P5-08: holdings-specific context resolved on-device. Rendered as its own
+    // card so the cloud analysis above stays verbatim.
+    private func personalizedContextSection(_ context: PersonalizedContext) -> some View {
+        Card(title: PersonalizedContext.title) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(context.lines.enumerated()), id: \.offset) { _, line in
+                    Label {
+                        Text(line).font(.subheadline)
+                    } icon: {
+                        Image(systemName: "person.crop.circle.badge.checkmark")
+                            .foregroundStyle(FinTheme.mint)
+                    }
+                }
+                Text(context.note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     // MARK: - History
@@ -490,6 +518,7 @@ struct ResearchView: View {
         showSuggestions = false
         auditErrorMessage = nil
         localOnlyMessage = nil
+        enrichedContext = nil
         // Drop any link to the previous analysis. persistIfNeeded reassigns
         // these once the new result is saved; until then the "Test with paper
         // trade" button must not attach a trade to a stale session.
@@ -592,6 +621,24 @@ struct ResearchView: View {
         case ..<0.34: return "conservative"
         case ..<0.67: return "balanced"
         default: return "aggressive"
+        }
+    }
+
+    // P5-08: map the generalized cloud narrative back to the user's specific
+    // holdings, entirely on-device. Additive — the result populates a separate
+    // section and never alters the cloud analysis text.
+    private func recontextualize(_ response: AnalysisResponse?) {
+        guard let response else {
+            enrichedContext = nil
+            return
+        }
+        let ledger = ledgers.first
+        let recontextualizer = Recontextualizer(gemma: gemma)
+        Task { @MainActor in
+            let result = await recontextualizer.enrich(response: response, ledger: ledger)
+            // Drop a stale enrichment if a newer result has since arrived.
+            guard controller?.finalResult?.sessionId == response.sessionId else { return }
+            enrichedContext = result.personalizedContext
         }
     }
 
