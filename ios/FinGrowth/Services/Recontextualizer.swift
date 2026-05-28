@@ -23,9 +23,12 @@ struct PersonalizedContext: Equatable, Sendable {
 
     // One or more lines mapping generalized references to concrete holdings.
     let lines: [String]
-    // The specific tickers surfaced in `lines`. Used to validate that an
-    // optional model paraphrase didn't silently drop a holding.
+    // The specific tickers surfaced in `lines`.
     let tickers: [String]
+    // The exact per-holding phrases asserted ("500 shares of AAPL"). Used to
+    // validate that an optional model paraphrase preserved each holding's count
+    // *and* ticker as a unit — never just the tokens independently.
+    let factPhrases: [String]
     // Provenance note — these specifics were resolved on-device and never left.
     let note: String
 
@@ -70,6 +73,7 @@ struct Recontextualizer: Sendable {
                 personalizedContext: PersonalizedContext(
                     lines: [prose],
                     tickers: context.tickers,
+                    factPhrases: context.factPhrases,
                     note: PersonalizedContext.onDeviceNote
                 )
             )
@@ -112,12 +116,14 @@ struct Recontextualizer: Sendable {
 
         var lines: [String] = []
         var tickers: [String] = []
+        var factPhrases: [String] = []
 
         if !matched.isEmpty {
             for category in matched {
                 let sorted = (byCategory[category] ?? []).sorted { value(of: $0) > value(of: $1) }
                 lines.append("Your \(displayName(for: category)) exposure: \(holdingList(sorted)).")
                 tickers.append(contentsOf: sorted.map { $0.ticker.uppercased() })
+                factPhrases.append(contentsOf: sorted.map(holdingPhrase))
             }
         } else {
             // A portfolio cue with no nameable sector ("your concentrated
@@ -126,10 +132,16 @@ struct Recontextualizer: Sendable {
             let top = Array(holdings.sorted { value(of: $0) > value(of: $1) }.prefix(3))
             lines.append("Based on your holdings: \(holdingList(top)).")
             tickers.append(contentsOf: top.map { $0.ticker.uppercased() })
+            factPhrases.append(contentsOf: top.map(holdingPhrase))
         }
 
         guard !lines.isEmpty else { return nil }
-        return PersonalizedContext(lines: lines, tickers: tickers, note: PersonalizedContext.onDeviceNote)
+        return PersonalizedContext(
+            lines: lines,
+            tickers: tickers,
+            factPhrases: factPhrases,
+            note: PersonalizedContext.onDeviceNote
+        )
     }
 
     // MARK: - Cue + sector vocabulary
@@ -259,31 +271,24 @@ struct Recontextualizer: Sendable {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    // A smoothed paraphrase is trustworthy only if every fact the deterministic
-    // lines asserted survives: each ticker symbol and each share count. This is
-    // what lets us label the result trusted "personalized context".
+    // A smoothed paraphrase is trustworthy only if every holding survives as a
+    // *paired unit* — the exact "<count> shares of <TICKER>" phrase. Validating
+    // tokens independently is unsafe: a substring check would accept "1500
+    // shares of AAPL" for a required count of 500, and would accept a swapped
+    // "200 shares of AAPL / 500 shares of MSFT" because the loose tokens all
+    // appear. Each phrase is matched with word boundaries so an inflated count
+    // (1500 vs 500) or a ticker prefix (AAPLE vs AAPL) cannot satisfy it. A
+    // faithful rewrite that reorders within a phrase is conservatively rejected
+    // and the deterministic lines stand.
     static func preservesFacts(_ context: PersonalizedContext, in prose: String) -> Bool {
-        let required = context.tickers + shareCounts(in: context.lines)
-        return mentionsAll(required, in: prose)
-    }
-
-    static func mentionsAll(_ tokens: [String], in text: String) -> Bool {
-        let upper = text.uppercased()
-        return tokens.allSatisfy { upper.contains($0.uppercased()) }
-    }
-
-    private static let shareCountRegex = makeRegex(#"(\d[\d,]*\.?\d*)\s+shares\b"#)
-
-    // The share-count tokens ("500", "12.5") asserted by the deterministic
-    // lines, pulled back out so a paraphrase can be checked against them.
-    static func shareCounts(in lines: [String]) -> [String] {
-        var counts: [String] = []
-        for line in lines {
-            let ns = line as NSString
-            for match in shareCountRegex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
-                counts.append(ns.substring(with: match.range(at: 1)))
+        let ns = prose as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        return context.factPhrases.allSatisfy { phrase in
+            let pattern = #"\b"# + NSRegularExpression.escapedPattern(for: phrase) + #"\b"#
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                return false
             }
+            return regex.firstMatch(in: prose, range: range) != nil
         }
-        return counts
     }
 }

@@ -105,27 +105,48 @@ final class RecontextualizerTests: XCTestCase {
 
     // MARK: - Smoothing validator preserves facts (audit fix)
 
-    func testPreservesFactsRequiresTickersAndShareCounts() {
-        let context = PersonalizedContext(
+    private func twoHoldingContext() -> PersonalizedContext {
+        PersonalizedContext(
             lines: ["Your technology exposure: 500 shares of AAPL and 200 shares of MSFT."],
             tickers: ["AAPL", "MSFT"],
+            factPhrases: ["500 shares of AAPL", "200 shares of MSFT"],
             note: PersonalizedContext.onDeviceNote
         )
-        // Faithful paraphrase keeps both tickers and both counts.
-        XCTAssertTrue(Recontextualizer.preservesFacts(
-            context, in: "You hold 500 AAPL shares and 200 MSFT shares."))
-        // Dropping a share count must be rejected even if tickers survive.
-        XCTAssertFalse(Recontextualizer.preservesFacts(
-            context, in: "You hold some AAPL and 200 MSFT shares."))
-        // Dropping a ticker must be rejected.
-        XCTAssertFalse(Recontextualizer.preservesFacts(
-            context, in: "You hold 500 and 200 shares of tech names."))
     }
 
-    func testShareCountsExtractsCountsFromLines() {
-        let counts = Recontextualizer.shareCounts(
-            in: ["Your technology exposure: 500 shares of AAPL and 200 shares of MSFT."])
-        XCTAssertEqual(counts, ["500", "200"])
+    func testPreservesFactsAcceptsFaithfulParaphrase() {
+        let context = twoHoldingContext()
+        XCTAssertTrue(Recontextualizer.preservesFacts(
+            context, in: "You currently hold 500 shares of AAPL and 200 shares of MSFT — a tech tilt."))
+    }
+
+    func testPreservesFactsRejectsInflatedShareCount() {
+        // "1500 shares of AAPL" must NOT satisfy a required "500 shares of AAPL"
+        // — substring matching would wrongly accept it; the word boundary won't.
+        let context = twoHoldingContext()
+        XCTAssertFalse(Recontextualizer.preservesFacts(
+            context, in: "You hold 1500 shares of AAPL and 200 shares of MSFT."))
+    }
+
+    func testPreservesFactsRejectsSwappedPairs() {
+        // Counts swapped between tickers: every loose token is present, but no
+        // phrase is intact, so this must be rejected.
+        let context = twoHoldingContext()
+        XCTAssertFalse(Recontextualizer.preservesFacts(
+            context, in: "You hold 200 shares of AAPL and 500 shares of MSFT."))
+    }
+
+    func testPreservesFactsRejectsDroppedHolding() {
+        let context = twoHoldingContext()
+        XCTAssertFalse(Recontextualizer.preservesFacts(
+            context, in: "You hold 500 shares of AAPL and some MSFT."))
+    }
+
+    func testPreservesFactsRejectsTickerPrefixCollision() {
+        // "AAPLE" must not satisfy a required AAPL phrase.
+        let context = twoHoldingContext()
+        XCTAssertFalse(Recontextualizer.preservesFacts(
+            context, in: "You hold 500 shares of AAPLE and 200 shares of MSFT."))
     }
 
     // MARK: - Acceptance: additive, original text never modified
