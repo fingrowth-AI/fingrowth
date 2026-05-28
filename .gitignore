@@ -36,3 +36,6 @@ AGENTS.md
 /AI_Investment_Strategist_Design_Doc_v2.1.docx.md
 *.docx
 *.docx.md
+
+# Vendored llama.cpp source + built XCFramework (large; rebuild via build-xcframework.sh)
+ios/vendor/

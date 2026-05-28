@@ -24,11 +24,13 @@
 		2DADB09D4616C1629DA77421 /* AppContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A923754A966D1F83FC931DB6 /* AppContainer.swift */; };
 		3C7B80A72780104FDF6BDEC4 /* PIIExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFDE7B78F1CF99B05489A41A /* PIIExtractor.swift */; };
 		3D30E09F3F54136533FB5B6B /* AppSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F9343656A9DFC6C27A2DF42 /* AppSchema.swift */; };
+		45571B5EA130DFC6E0286E83 /* llama.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0B0C8FD844FA85FD76A0CE98 /* llama.xcframework */; };
 		4988FCA29B9110A17C6D5E4B /* PrivacyAuditLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93E54EC1B36614D39A367FD8 /* PrivacyAuditLogTests.swift */; };
 		4EB404B5F079BFC185410F33 /* Recontextualizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7306990456C5FEAD0D755B24 /* Recontextualizer.swift */; };
 		4F29D99E9827EAD0D239D2EB /* CSVPrivacyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 089AB79048AEAEF9E5813D21 /* CSVPrivacyParser.swift */; };
 		529FAC2517B83E8BE8C49B63 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D5EBDB1E1B6F604AE23AEE /* APIClient.swift */; };
 		54416B2EE3B67DCE91C545C3 /* PortfolioStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 076DA35D0DC90C95C18D4ED6 /* PortfolioStore.swift */; };
+		583354B37A38298060D8CD16 /* llama.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0B0C8FD844FA85FD76A0CE98 /* llama.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		5B8AD7768245F3E0CA1626B6 /* GemmaServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BDC3EC27889F86113C60055 /* GemmaServiceTests.swift */; };
 		5C3C988A74D1CF1E94B32835 /* LlamaInferenceBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD5921AC7CC0A5588C3F919E /* LlamaInferenceBackend.swift */; };
 		5D0D9E39322421A7CE8BAAAC /* RootTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03C0955B265EC357F60D6706 /* RootTab.swift */; };
@@ -68,6 +70,20 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		C17A650020B0E462CAF1E4E5 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				583354B37A38298060D8CD16 /* llama.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		0043C2C98821F81537CE940F /* IntentRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentRouterTests.swift; sourceTree = "<group>"; };
 		0234483FDC89D5CE5558F536 /* TickerCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TickerCatalog.swift; sourceTree = "<group>"; };
@@ -77,6 +93,7 @@
 		076DA35D0DC90C95C18D4ED6 /* PortfolioStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortfolioStore.swift; sourceTree = "<group>"; };
 		089AB79048AEAEF9E5813D21 /* CSVPrivacyParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSVPrivacyParser.swift; sourceTree = "<group>"; };
 		0A342BC6A3B65965BF13E067 /* AppDataLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDataLocation.swift; sourceTree = "<group>"; };
+		0B0C8FD844FA85FD76A0CE98 /* llama.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = llama.xcframework; path = "vendor/llama.cpp/build-apple/llama.xcframework"; sourceTree = "<group>"; };
 		0E739B4C1D34CA02A016D03A /* QueryRewriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueryRewriterTests.swift; sourceTree = "<group>"; };
 		1442139D9F32B9D1420E504A /* CSVPrivacyParserGemmaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSVPrivacyParserGemmaTests.swift; sourceTree = "<group>"; };
 		198A6B6B9353E870FAB7CEE7 /* PrivateLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivateLedger.swift; sourceTree = "<group>"; };
@@ -85,6 +102,7 @@
 		200C1E54EBA97E733CEFEB55 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		21234ACAF306DFF1BCE8E8C9 /* GemmaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GemmaService.swift; sourceTree = "<group>"; };
 		25D5EBDB1E1B6F604AE23AEE /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		26A04F17093818358D93D4A8 /* FinGrowth.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FinGrowth.entitlements; sourceTree = "<group>"; };
 		4036E11D7DF8A72E749D8AD7 /* GemmaModelDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GemmaModelDownloader.swift; sourceTree = "<group>"; };
 		441DED836938BFD1B9CA7474 /* PrivacyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyView.swift; sourceTree = "<group>"; };
 		4B65300994D15D5BD64A8468 /* AuditLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditLogTests.swift; sourceTree = "<group>"; };
@@ -95,6 +113,7 @@
 		640CF4B2D8C426172DBBB38D /* CSVPrivacyParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSVPrivacyParserTests.swift; sourceTree = "<group>"; };
 		689E3C75F8811E1A2865F838 /* PortfolioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortfolioView.swift; sourceTree = "<group>"; };
 		6F031E428CF3CEB5CB565941 /* AppShellTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellTests.swift; sourceTree = "<group>"; };
+		702F5798AFCF027CF4281481 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		70907220A5A69575403668B3 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		7306990456C5FEAD0D755B24 /* Recontextualizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Recontextualizer.swift; sourceTree = "<group>"; };
 		7BDC3EC27889F86113C60055 /* GemmaServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GemmaServiceTests.swift; sourceTree = "<group>"; };
@@ -121,6 +140,17 @@
 		F21182A4D3B5EB8B0761D7D2 /* AnalysisAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisAPI.swift; sourceTree = "<group>"; };
 		F93DD0A08011A8FF64F86C93 /* ResearchHistoryEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchHistoryEntry.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		05B9BC41EB3D9AB09C8211DE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				45571B5EA130DFC6E0286E83 /* llama.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		46D6D6AEEB94616023D3A3E1 /* Models */ = {
@@ -166,6 +196,7 @@
 			children = (
 				A2A2BB74DD54CA50E8A15493 /* FinGrowth */,
 				8A6D7213A1950F83E5D87B76 /* Tests */,
+				E11747BE072A02E3072FDB17 /* Frameworks */,
 				4BA60118DC2B86002E82CFB5 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -194,11 +225,21 @@
 			isa = PBXGroup;
 			children = (
 				DBAB47161D1F5AFCC485EE2A /* App.swift */,
+				26A04F17093818358D93D4A8 /* FinGrowth.entitlements */,
+				702F5798AFCF027CF4281481 /* Info.plist */,
 				46D6D6AEEB94616023D3A3E1 /* Models */,
 				E9DA066958D684B0A15B2D93 /* Services */,
 				65AB50692CB3BA9B543DFA97 /* Views */,
 			);
 			path = FinGrowth;
+			sourceTree = "<group>";
+		};
+		E11747BE072A02E3072FDB17 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				0B0C8FD844FA85FD76A0CE98 /* llama.xcframework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 		E9DA066958D684B0A15B2D93 /* Services */ = {
@@ -236,6 +277,8 @@
 			buildConfigurationList = 4D313343A6019F3EF44544F9 /* Build configuration list for PBXNativeTarget "FinGrowth" */;
 			buildPhases = (
 				FB3F6D31ECB98314DD70F958 /* Sources */,
+				05B9BC41EB3D9AB09C8211DE /* Frameworks */,
+				C17A650020B0E462CAF1E4E5 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -390,7 +433,12 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"vendor/llama.cpp/build-apple\"",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = FinGrowth/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = FinGrowth;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -588,7 +636,12 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"vendor/llama.cpp/build-apple\"",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = FinGrowth/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = FinGrowth;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

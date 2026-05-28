@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Partial Info.plist. GENERATE_INFOPLIST_FILE stays YES, so Xcode merges the
+  generated keys (orientations, launch screen, scene manifest, bundle info from
+  INFOPLIST_KEY_* build settings) into this file. We only add what can't be
+  expressed as a build setting:
+
+  - NSAppTransportSecurity / NSAllowsLocalNetworking: the research backend is
+    served over plaintext HTTP on the LAN (http://<mac-ip>:8000). ATS blocks
+    cleartext to a private IP by default; this permits local-network loads
+    without requiring TLS. localhost is exempt (so the simulator never needed
+    this) but a device hitting the Mac's LAN IP does.
+  - NSLocalNetworkUsageDescription: iOS requires this string + a user "Allow"
+    before the app may connect to a device on the local network.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>FinGrowth connects to your research backend running on your local network.</string>
+</dict>
+</plist>

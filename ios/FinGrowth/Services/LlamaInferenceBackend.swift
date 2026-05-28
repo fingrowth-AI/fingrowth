@@ -1,7 +1,8 @@
 import Foundation
+import os
 
-#if canImport(LlamaCpp)
-import LlamaCpp
+#if canImport(llama)
+import llama
 #endif
 
 // Inference backend abstraction (P5-01).
@@ -99,35 +100,81 @@ actor StubLlamaBackend: LlamaInferenceBackend {
     }
 }
 
-// MARK: - Real backend (compiled only with the swift-llama.cpp package)
+// MARK: - Real backend (compiled only with the llama.cpp XCFramework)
 
-#if canImport(LlamaCpp)
-// Bridges GemmaService to swift-llama.cpp. Only compiled when the SPM package
-// is linked, so it never affects the verifiable build here. The exact symbol
-// names follow the chosen swift-llama.cpp distribution and may need adjusting
-// when the package is added; the streaming shape (load weights, then emit
-// token deltas until EOS / maxTokens) is what GemmaService relies on.
+#if canImport(llama)
+// Bridges GemmaService to the llama.cpp C API exposed by the `llama`
+// XCFramework (built from upstream ggml-org/llama.cpp via build-xcframework.sh
+// and linked through ios/project.yml). Compiled only when that package is
+// present, so the deterministic stub path stays the default in CI/simulator.
+//
+// The C handles (model/context/vocab/sampler) are owned by this actor, which
+// serializes all llama_* calls — none of them are thread-safe across contexts.
+// Generation streams token pieces until the model emits an end-of-generation
+// token or `maxTokens` deltas, honoring task cancellation between tokens.
 actor LlamaCppBackend: LlamaInferenceBackend {
-    private var model: LlamaModel?
-    private var context: LlamaContext?
+    private var model: OpaquePointer?
+    private var context: OpaquePointer?
+    private var vocab: OpaquePointer?
+    // `llama_sampler` is a complete type in the headers, so Swift imports it as
+    // a typed pointer (unlike the opaque model/context/vocab handles).
+    private var sampler: UnsafeMutablePointer<llama_sampler>?
 
     nonisolated var requiresModelFile: Bool { true }
+
+    // Spike instrumentation (P5 real-model bring-up): load time + tokens/sec land
+    // in the Xcode console / Console.app under subsystem com.fingrowth.FinGrowth,
+    // category "llama".
+    private static let log = Logger(subsystem: "com.fingrowth.FinGrowth", category: "llama")
+
+    // ggml backend registration is process-global; run it exactly once.
+    private static let backendInit: Void = { llama_backend_init() }()
 
     func loadModel(at url: URL) async throws {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw LlamaBackendError.modelFileMissing(url)
         }
-        do {
-            let model = try LlamaModel(path: url.path)
-            self.model = model
-            self.context = try LlamaContext(model: model)
-        } catch {
-            throw LlamaBackendError.loadFailed(error.localizedDescription)
+        _ = Self.backendInit
+        let loadStart = Date()
+
+        var modelParams = llama_model_default_params()
+        modelParams.n_gpu_layers = 99  // offload all layers to Metal on device
+
+        guard let loadedModel = url.path.withCString({ llama_model_load_from_file($0, modelParams) }) else {
+            throw LlamaBackendError.loadFailed("llama_model_load_from_file returned null (unsupported architecture or corrupt GGUF?)")
         }
+
+        var contextParams = llama_context_default_params()
+        // Research prompts are short (classify/rewrite/recontextualize), so a
+        // small window keeps the KV cache tiny — meaningful headroom on devices
+        // without the increased-memory entitlement.
+        contextParams.n_ctx = 2048
+        contextParams.n_batch = 512
+        guard let createdContext = llama_init_from_model(loadedModel, contextParams) else {
+            llama_model_free(loadedModel)
+            throw LlamaBackendError.loadFailed("llama_init_from_model returned null")
+        }
+
+        // Greedy (argmax) sampling: deterministic, so a fixed prompt yields a
+        // fixed completion — keeps the model path auditable like the rest of
+        // the privacy pipeline.
+        let chain = llama_sampler_chain_init(llama_sampler_chain_default_params())
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy())
+
+        model = loadedModel
+        context = createdContext
+        vocab = llama_model_get_vocab(loadedModel)
+        sampler = chain
+        Self.log.info("model loaded in \(Int(Date().timeIntervalSince(loadStart) * 1000)) ms (n_ctx=\(llama_n_ctx(createdContext)))")
     }
 
     func unloadModel() async {
+        if let sampler { llama_sampler_free(sampler) }
+        if let context { llama_free(context) }
+        if let model { llama_model_free(model) }
+        sampler = nil
         context = nil
+        vocab = nil
         model = nil
     }
 
@@ -135,25 +182,84 @@ actor LlamaCppBackend: LlamaInferenceBackend {
 
     nonisolated func generate(prompt: String, maxTokens: Int) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    guard let context = await self.context else {
-                        throw LlamaBackendError.modelNotLoaded
-                    }
-                    try await context.evaluate(prompt: prompt)
-                    var produced = 0
-                    while produced < maxTokens, !Task.isCancelled {
-                        guard let piece = try await context.nextToken() else { break }
-                        continuation.yield(piece)
-                        produced += 1
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
+            let task = Task { await self.runGeneration(prompt: prompt, maxTokens: maxTokens, continuation: continuation) }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    private func runGeneration(
+        prompt: String,
+        maxTokens: Int,
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) {
+        guard let context, let vocab, let sampler else {
+            continuation.finish(throwing: LlamaBackendError.modelNotLoaded)
+            return
+        }
+
+        // Fresh KV state per call so one query's tokens never bleed into the
+        // next — each classify/rewrite/recontextualize call is independent.
+        llama_memory_clear(llama_get_memory(context), true)
+
+        var tokens = [llama_token]()
+        let tokenized = prompt.withCString { cstr -> Bool in
+            let len = Int32(strlen(cstr))
+            let needed = -llama_tokenize(vocab, cstr, len, nil, 0, true, true)
+            guard needed > 0 else { return false }
+            tokens = [llama_token](repeating: 0, count: Int(needed))
+            let written = tokens.withUnsafeMutableBufferPointer {
+                llama_tokenize(vocab, cstr, len, $0.baseAddress, Int32($0.count), true, true)
+            }
+            return written > 0
+        }
+        guard tokenized, !tokens.isEmpty else {
+            continuation.finish()
+            return
+        }
+
+        let promptStatus = tokens.withUnsafeMutableBufferPointer { buf -> Int32 in
+            llama_decode(context, llama_batch_get_one(buf.baseAddress, Int32(buf.count)))
+        }
+        guard promptStatus == 0 else {
+            continuation.finish(throwing: LlamaBackendError.loadFailed("prompt decode failed (\(promptStatus))"))
+            return
+        }
+
+        let promptTokenCount = tokens.count
+        let genStart = Date()
+        var produced = 0
+        while produced < maxTokens {
+            if Task.isCancelled { break }
+            let id = llama_sampler_sample(sampler, context, -1)
+            if llama_vocab_is_eog(vocab, id) { break }
+            if let piece = Self.piece(vocab: vocab, token: id), !piece.isEmpty {
+                continuation.yield(piece)
+            }
+            var next = id
+            let status = withUnsafeMutablePointer(to: &next) { ptr in
+                llama_decode(context, llama_batch_get_one(ptr, 1))
+            }
+            if status != 0 { break }  // 1 = KV full, <0 = fatal; stop cleanly
+            produced += 1
+        }
+        let elapsed = Date().timeIntervalSince(genStart)
+        Self.log.info("gen: prompt=\(promptTokenCount) tok, produced=\(produced) tok in \(String(format: "%.2f", elapsed))s (\(String(format: "%.1f", Double(produced) / max(elapsed, 0.0001))) tok/s)")
+        continuation.finish()
+    }
+
+    // Detokenize a single id to its UTF-8 text. `special: false` so control
+    // tokens never render as literal text. Grows the buffer if a glyph needs
+    // more than the initial 256 bytes.
+    private static func piece(vocab: OpaquePointer, token: llama_token) -> String? {
+        var buffer = [CChar](repeating: 0, count: 256)
+        var n = llama_token_to_piece(vocab, token, &buffer, Int32(buffer.count), 0, false)
+        if n < 0 {
+            buffer = [CChar](repeating: 0, count: Int(-n))
+            n = llama_token_to_piece(vocab, token, &buffer, Int32(buffer.count), 0, false)
+        }
+        guard n > 0 else { return n == 0 ? "" : nil }
+        let bytes = buffer.prefix(Int(n)).map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }
 #endif

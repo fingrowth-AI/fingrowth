@@ -50,26 +50,29 @@ protocol ModelFileTransferring: Sendable {
 }
 
 struct GemmaModelDownloader: Sendable {
-    // Hugging Face GGUF for Gemma 4 E4B (4-bit). Overridable for tests / future
-    // model swaps. The default points at the quantized build the design doc
-    // specifies (~2.5GB).
+    // Hugging Face GGUF for Gemma 4 E2B (Q3_K_S, ~2.45GB). Ungated unsloth
+    // mirror, so the download needs no auth header. We run E2B at a small quant
+    // rather than the E4B target because E4B (~4.5GB resident with full Metal
+    // offload) is jetsam-killed under the default per-app memory limit, and the
+    // increased-memory-limit entitlement can't be signed by a free Personal
+    // Team. Bump to E4B Q4_K_M on a paid account. Overridable for tests/swaps.
     static let defaultModelURL = URL(
-        string: "https://huggingface.co/google/gemma-4-e4b-it-GGUF/resolve/main/gemma-4-e4b-it-Q4_K_M.gguf"
+        string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q3_K_S.gguf"
     )!
-    static let modelFileName = "gemma-4-e4b-q4_k_m.gguf"
-    // Size floor for the default (real) model. The Q4_K_M GGUF is ~2.5GB, so a
-    // 2GB lower bound rejects gross truncation while leaving headroom for quant
-    // variation. This is a coarse gate — pin `defaultExpectedSHA256` for true
-    // integrity. Tests override with a small value.
-    static let defaultMinimumValidBytes: Int64 = 2_000_000_000
+    static let modelFileName = "gemma-4-e2b-it-q3_k_s.gguf"
+    // Size floor for the default (real) model. The pinned GGUF is
+    // 2,445,650,048 bytes; a 2.4GB lower bound rejects gross truncation. This
+    // is only a cheap pre-check — `defaultExpectedSHA256` below is the
+    // authoritative gate. Tests override with a small value.
+    static let defaultMinimumValidBytes: Int64 = 2_400_000_000
     // Any floor at/above this is considered "tight enough" to gate a real
     // download in the absence of a checksum (see `hasStrongValidation`).
     static let strongValidationFloor: Int64 = 1_000_000_000
-    // TODO: pin the published SHA-256 of the exact GGUF before enabling real
-    // downloads. Left nil for now because the model URL above is provisional;
-    // a wrong digest would reject the genuine file. With the 2GB floor the
-    // default still qualifies as "strong" validation.
-    static let defaultExpectedSHA256: String? = nil
+    // Published SHA-256 of unsloth/gemma-4-E2B-it-GGUF :: gemma-4-E2B-it-Q3_K_S.gguf
+    // (HF LFS oid). Both freshly downloaded and cached copies are verified
+    // against this, so a corrupt or substituted file is rejected.
+    static let defaultExpectedSHA256: String? =
+        "fce55e2ce5c7b8c96a9a4ea7dd9882ca6dd533edcfa50302526c4951d4e055ba"
 
     let modelURL: URL
     let cacheDirectory: URL

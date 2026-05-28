@@ -53,7 +53,7 @@ final class GemmaService {
     }
 
     nonisolated static func makeDefaultBackend() -> LlamaInferenceBackend {
-        #if canImport(LlamaCpp)
+        #if canImport(llama)
         return LlamaCppBackend()
         #else
         return StubLlamaBackend()

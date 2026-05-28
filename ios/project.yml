@@ -31,12 +31,30 @@ targets:
       - path: FinGrowth
         excludes:
           - "**/.DS_Store"
+    dependencies:
+      # llama.cpp inference backend (P5-01 real path). Dynamic XCFramework built
+      # from upstream ggml-org/llama.cpp via build-xcframework.sh; gitignored and
+      # rebuilt locally, not committed. Its modulemap self-links c++/Accelerate/
+      # Metal/Foundation, so no extra OTHER_LDFLAGS are needed. Linking it makes
+      # `canImport(llama)` true, which swaps GemmaService onto LlamaCppBackend.
+      - framework: vendor/llama.cpp/build-apple/llama.xcframework
+        embed: true
+        codeSign: true
+    # NOTE: the com.apple.developer.kernel.increased-memory-limit entitlement
+    # would help a ~4.5GB E4B model avoid jetsam, but a free Personal Team can't
+    # sign it. Omitted for now — llama.cpp mmaps the GGUF so resident memory is
+    # the working set + KV cache, which can fit under the default ceiling on an
+    # 8GB Pro. Re-add this (with a paid team) if E4B gets memory-killed.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fingrowth.FinGrowth
         PRODUCT_NAME: FinGrowth
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
+        # Partial plist merged with the generated keys — adds the ATS local-net
+        # exception + local-network usage string so the device can reach the
+        # backend over plaintext HTTP on the LAN. See FinGrowth/Info.plist.
+        INFOPLIST_FILE: FinGrowth/Info.plist
         CURRENT_PROJECT_VERSION: "1"
         MARKETING_VERSION: "0.1.0"
         INFOPLIST_KEY_CFBundleDisplayName: "FinGrowth"
@@ -44,11 +62,11 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        DEVELOPMENT_TEAM: ""
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: YES
+        DEVELOPMENT_TEAM: ""
 
   FinGrowthTests:
     type: bundle.unit-test

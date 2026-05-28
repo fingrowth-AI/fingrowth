@@ -24,6 +24,7 @@ final class GemmaServiceTests: XCTestCase {
         let downloader = try GemmaModelDownloader(
             cacheDirectory: dir,
             minimumValidBytes: 10,
+            expectedSHA256: nil,  // size-threshold test only — opt out of the production checksum
             transfer: RecordingTransfer(bytes: 0)
         )
         XCTAssertFalse(downloader.isModelCached(), "no file yet")
@@ -45,6 +46,7 @@ final class GemmaServiceTests: XCTestCase {
         let downloader = try GemmaModelDownloader(
             cacheDirectory: dir,
             minimumValidBytes: 8,
+            expectedSHA256: nil,  // cache-reuse test only — opt out of the production checksum
             transfer: transfer
         )
 
@@ -62,6 +64,7 @@ final class GemmaServiceTests: XCTestCase {
         let restarted = try GemmaModelDownloader(
             cacheDirectory: dir,
             minimumValidBytes: 8,
+            expectedSHA256: nil,
             transfer: transfer
         )
         XCTAssertTrue(restarted.isModelCached())
@@ -324,6 +327,7 @@ final class GemmaServiceTests: XCTestCase {
         let downloader = try GemmaModelDownloader(
             cacheDirectory: dir,
             minimumValidBytes: 8,
+            expectedSHA256: nil,
             transfer: transfer
         )
         let backend = MockFileBackend()
@@ -345,7 +349,7 @@ final class GemmaServiceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let weak = try GemmaModelDownloader(
-            cacheDirectory: dir, minimumValidBytes: 8, transfer: RecordingTransfer(bytes: 0)
+            cacheDirectory: dir, minimumValidBytes: 8, expectedSHA256: nil, transfer: RecordingTransfer(bytes: 0)
         )
         XCTAssertFalse(weak.hasStrongValidation)
 
