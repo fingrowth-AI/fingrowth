@@ -34,7 +34,9 @@
 		5EC8485A4D14F56E1618670F /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C4380128A82FB5CDB62D549 /* AppSettings.swift */; };
 		6644B6E577B3D512720A5F1D /* ShareableProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = D925F43446D8B6B05C1BE8F1 /* ShareableProfile.swift */; };
 		7050B3EE3264EA5005514FCA /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBAB47161D1F5AFCC485EE2A /* App.swift */; };
+		70998DCA9F44EEEFF2B47C01 /* IntentRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F147082300F451DD0D4248C /* IntentRouter.swift */; };
 		728A066A1D5F85A54DD298F1 /* TickerCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0234483FDC89D5CE5558F536 /* TickerCatalog.swift */; };
+		73E3B75AF10E51094E857B82 /* IntentRouterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0043C2C98821F81537CE940F /* IntentRouterTests.swift */; };
 		74F53CD8D46BB38E34A535BD /* PaperTradePrefill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A38C0A35AD998F4C10F8B8E /* PaperTradePrefill.swift */; };
 		796ECDBBF04F1E7F80F4F800 /* AppDataLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A342BC6A3B65965BF13E067 /* AppDataLocation.swift */; };
 		85D9A701ACEBA79B433981A1 /* AnalysisStreamController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A9DADCFCE177368B1D4009 /* AnalysisStreamController.swift */; };
@@ -65,6 +67,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0043C2C98821F81537CE940F /* IntentRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentRouterTests.swift; sourceTree = "<group>"; };
 		0234483FDC89D5CE5558F536 /* TickerCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TickerCatalog.swift; sourceTree = "<group>"; };
 		03C0955B265EC357F60D6706 /* RootTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTab.swift; sourceTree = "<group>"; };
 		05A9DADCFCE177368B1D4009 /* AnalysisStreamController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisStreamController.swift; sourceTree = "<group>"; };
@@ -96,6 +99,7 @@
 		8BF1982E6D3245577A734292 /* PaperTradingClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTradingClient.swift; sourceTree = "<group>"; };
 		93E54EC1B36614D39A367FD8 /* PrivacyAuditLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyAuditLogTests.swift; sourceTree = "<group>"; };
 		9C4380128A82FB5CDB62D549 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		9F147082300F451DD0D4248C /* IntentRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentRouter.swift; sourceTree = "<group>"; };
 		A27418E9ACE6AE2165327644 /* ResearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchView.swift; sourceTree = "<group>"; };
 		A923754A966D1F83FC931DB6 /* AppContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainer.swift; sourceTree = "<group>"; };
 		AFDE7B78F1CF99B05489A41A /* PIIExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PIIExtractor.swift; sourceTree = "<group>"; };
@@ -173,6 +177,7 @@
 				640CF4B2D8C426172DBBB38D /* CSVPrivacyParserTests.swift */,
 				E640E6EECDD28A3251E83C82 /* DifferentialPrivacyTests.swift */,
 				7BDC3EC27889F86113C60055 /* GemmaServiceTests.swift */,
+				0043C2C98821F81537CE940F /* IntentRouterTests.swift */,
 				93E54EC1B36614D39A367FD8 /* PrivacyAuditLogTests.swift */,
 				0E739B4C1D34CA02A016D03A /* QueryRewriterTests.swift */,
 				C3F34143077479B0328819FA /* ThermalMonitorTests.swift */,
@@ -203,6 +208,7 @@
 				4DE69FBE300A997A0AB294EA /* DifferentialPrivacy.swift */,
 				4036E11D7DF8A72E749D8AD7 /* GemmaModelDownloader.swift */,
 				21234ACAF306DFF1BCE8E8C9 /* GemmaService.swift */,
+				9F147082300F451DD0D4248C /* IntentRouter.swift */,
 				DD5921AC7CC0A5588C3F919E /* LlamaInferenceBackend.swift */,
 				1A38C0A35AD998F4C10F8B8E /* PaperTradePrefill.swift */,
 				8BF1982E6D3245577A734292 /* PaperTradingClient.swift */,
@@ -306,6 +312,7 @@
 				168A7AA780AEE5012786B61C /* CSVPrivacyParserTests.swift in Sources */,
 				18EE90FD673B58A2B19595DB /* DifferentialPrivacyTests.swift in Sources */,
 				5B8AD7768245F3E0CA1626B6 /* GemmaServiceTests.swift in Sources */,
+				73E3B75AF10E51094E857B82 /* IntentRouterTests.swift in Sources */,
 				4988FCA29B9110A17C6D5E4B /* PrivacyAuditLogTests.swift in Sources */,
 				DC932C77BA806F005036800B /* QueryRewriterTests.swift in Sources */,
 				23F1272786E343FFFFEEB9A6 /* ThermalMonitorTests.swift in Sources */,
@@ -329,6 +336,7 @@
 				BD91929020BC96205654D57C /* DifferentialPrivacy.swift in Sources */,
 				E17A76AD283792C33E83A20D /* GemmaModelDownloader.swift in Sources */,
 				C50211EAD55A7E7E3394E7E8 /* GemmaService.swift in Sources */,
+				70998DCA9F44EEEFF2B47C01 /* IntentRouter.swift in Sources */,
 				98BED71DCCD310885DB99CA4 /* JSONValue.swift in Sources */,
 				5C3C988A74D1CF1E94B32835 /* LlamaInferenceBackend.swift in Sources */,
 				2811CC416181979CEDF51B5E /* ModelDownloadView.swift in Sources */,

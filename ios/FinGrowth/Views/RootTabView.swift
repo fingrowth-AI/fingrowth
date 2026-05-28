@@ -66,7 +66,8 @@ struct RootTabView: View {
                 apiClient: apiClient,
                 paperTradePrefill: paperTradePrefill,
                 onSwitchToPortfolio: { selection = .portfolio },
-                gemma: gemma
+                gemma: gemma,
+                settings: settings
             )
         case .portfolio:
             if let portfolioStore {

@@ -212,6 +212,14 @@ final class GemmaService {
         return Self.matchCategory(output, in: categories) ?? ""
     }
 
+    /// Classify a research query into a routing intent (P5-07). Pure
+    /// delegation to IntentRouter — kept as a method on GemmaService so the
+    /// design-doc signature (`GemmaService.classifyIntent(query:) -> IntentType`)
+    /// is satisfied and callers don't have to know about the router type.
+    func classifyIntent(query: String) async -> IntentType {
+        await IntentRouter(gemma: self).classify(query: query)
+    }
+
     /// Resolve raw model output to one of `categories`: exact match, then
     /// substring either direction, else nil.
     nonisolated static func matchCategory(_ raw: String, in categories: [String]) -> String? {

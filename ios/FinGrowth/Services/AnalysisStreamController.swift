@@ -54,6 +54,16 @@ final class AnalysisStreamController {
         streamingTask = nil
     }
 
+    // Cancel any in-flight stream and clear the displayed results back to idle.
+    // Unlike `cancel()`, this also wipes the last run's research/analysis/final
+    // state so a follow-up that never contacts the cloud (e.g. a .localOnly
+    // route) doesn't leave stale results on screen.
+    func clear() {
+        cancel()
+        reset()
+        phase = .idle
+    }
+
     private func reset() {
         stages = []
         research = nil

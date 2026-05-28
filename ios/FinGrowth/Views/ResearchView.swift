@@ -11,14 +11,24 @@ struct ResearchView: View {
     let paperTradePrefill: PaperTradePrefill
     let onSwitchToPortfolio: () -> Void
     let gemma: GemmaService
+    let settings: AppSettings
 
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \ResearchHistoryEntry.createdAt, order: .reverse)
     private var history: [ResearchHistoryEntry]
     @Query(sort: \PrivateLedger.importedAt, order: .reverse)
     private var ledgers: [PrivateLedger]
+    @Query(sort: \ShareableProfile.generatedAt, order: .reverse)
+    private var profiles: [ShareableProfile]
 
     @State private var controller: AnalysisStreamController?
+    // In-flight intent routing for the current Run. Stored so a second tap (or
+    // an edit + re-tap) while classification/rewrite/audit is still awaiting
+    // cancels the older run — otherwise a stale task could fire an extra cloud
+    // request and write a duplicate audit row, breaking the one-call/one-entry
+    // invariant. The Run button can't guard this on its own because
+    // controller.start (which flips isRunning) only happens after the awaits.
+    @State private var routingTask: Task<Void, Never>?
     @State private var query: String = ""
     @State private var ticker: String = ""
     @State private var analysisType: AnalysisType = .technical
@@ -31,6 +41,7 @@ struct ResearchView: View {
     @State private var lastPersistedSessionLinkID: UUID?
     @State private var selectedHistoryEntry: ResearchHistoryEntry?
     @State private var auditErrorMessage: String?
+    @State private var localOnlyMessage: String?
     @Environment(\.colorScheme) private var colorScheme
 
     // Wire names mirror backend/app/routers/analysis.py — progress frames emit
@@ -52,6 +63,9 @@ struct ResearchView: View {
                         querySection
                         if let auditErrorMessage {
                             errorBanner(message: auditErrorMessage)
+                        }
+                        if let localOnlyMessage {
+                            localOnlyBanner(message: localOnlyMessage)
                         }
                         if let controller {
                             progressSection(controller: controller)
@@ -403,6 +417,15 @@ struct ResearchView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
+    private func localOnlyBanner(message: String) -> some View {
+        Label(message, systemImage: "lock.shield")
+            .font(.subheadline)
+            .padding(12)
+            .background(FinTheme.mint.opacity(0.12))
+            .foregroundStyle(FinTheme.mint)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
     // MARK: - History
 
     @ViewBuilder
@@ -466,6 +489,7 @@ struct ResearchView: View {
         ensureController()
         showSuggestions = false
         auditErrorMessage = nil
+        localOnlyMessage = nil
         // Drop any link to the previous analysis. persistIfNeeded reassigns
         // these once the new result is saved; until then the "Test with paper
         // trade" button must not attach a trade to a stale session.
@@ -477,13 +501,51 @@ struct ResearchView: View {
         let type = analysisType
         let context = modelContext
         let rewriter = QueryRewriter(gemma: gemma)
+        let router = IntentRouter(gemma: gemma)
         let ledger = ledgers.first
+        let profile = profiles.first
+        let privacyLevel = settings.portfolioPrivacyLevel
 
-        // Rewrite ON-DEVICE *before* anything leaves the device, then send the
-        // rewritten text — so the cloud (and the audit log) only ever see the
-        // generalized query. The ticker symbol is public, not PII.
-        Task { @MainActor in
+        // Intent routing (P5-07): classify the query first, then run the
+        // pipeline the intent calls for. localOnly never contacts the cloud;
+        // hybrid runs both QueryRewriter and Differential Privacy before the
+        // call; cloudAnalysis runs only the rewriter. The classifier is
+        // deterministic, so the privacy gate stays auditable.
+        // Supersede any routing still in flight from a prior tap before
+        // starting this one — the older task must not record an audit row or
+        // start a cloud request once a newer Run has begun.
+        routingTask?.cancel()
+        routingTask = Task { @MainActor in
+            let intent = await router.classify(query: rawQuery)
+            if Task.isCancelled { return }
+
+            if intent == .localOnly {
+                // Acceptance: no cloud call for a portfolio-only question.
+                // The Portfolio tab is the source of truth — point the user
+                // there rather than fabricating an answer here. Local response
+                // generation lands in P5-08.
+                localOnlyMessage = "This question can be answered from your on-device portfolio — open the Portfolio tab to view it. No cloud request was made."
+                // clear() (not cancel()) so the previous run's results don't
+                // linger on screen next to the "No cloud request" banner.
+                controller?.clear()
+                return
+            }
+
+            // Rewrite ON-DEVICE *before* anything leaves the device, then send the
+            // rewritten text — so the cloud (and the audit log) only ever see the
+            // generalized query. The ticker symbol is public, not PII.
             let rewritten = await rewriter.rewrite(query: rawQuery, ledger: ledger)
+            if Task.isCancelled { return }
+
+            // Hybrid is the only intent that earns generalized portfolio
+            // context: a pure market question (.cloudAnalysis) ships without
+            // a profile so we don't leak personal weights on an unrelated
+            // query. When no ShareableProfile exists yet, the call still goes
+            // out — without profile context — so the user isn't blocked on
+            // having imported a CSV.
+            let generalized: GeneralizedProfile? = (intent == .hybrid && profile != nil)
+                ? DifferentialPrivacy.generalize(profile: profile!, privacyLevel: privacyLevel)
+                : nil
 
             // Record exactly one audit entry of what is actually sent. Recording
             // before transmission keeps the log honest even if the stream fails.
@@ -494,7 +556,7 @@ struct ResearchView: View {
                 try PrivacyAuditLog(context: context).record(
                     original: rawQuery,
                     rewritten: rewritten.rewrittenText,
-                    profile: nil,  // generalized portfolio context is wired in P5-08
+                    profile: generalized,
                     substitutions: rewritten.substitutions,
                     confidence: rewritten.confidenceScore
                 )
@@ -509,7 +571,27 @@ struct ResearchView: View {
                 ticker: tickerSymbol,
                 analysisType: type
             )
-            controller?.start(query: request)
+            controller?.start(query: request, profile: generalized.map(Self.wireProfile))
+        }
+    }
+
+    // Project the on-device GeneralizedProfile into the cloud wire shape. The
+    // riskScore (a 0…1 number) is bucketed to a generalized string label so
+    // the wire payload never carries the raw score.
+    private static func wireProfile(_ generalized: GeneralizedProfile) -> PortfolioProfile {
+        PortfolioProfile(
+            sectorWeights: generalized.sectorWeights,
+            largestPosition: generalized.largestPosition,
+            diversification: generalized.diversification,
+            riskOrientation: generalized.riskScore.map(riskOrientationLabel)
+        )
+    }
+
+    private static func riskOrientationLabel(_ score: Double) -> String {
+        switch score {
+        case ..<0.34: return "conservative"
+        case ..<0.67: return "balanced"
+        default: return "aggressive"
         }
     }
 
