@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.middleware.disclaimer import DisclaimerMiddleware
 from app.routers import analysis, health, paper_trading
 
 app = FastAPI(
@@ -10,6 +11,10 @@ app = FastAPI(
         "This is a research tool, not investment advice."
     ),
 )
+
+# Compliance gate (P6-03): guarantees every AnalysisResponse carries the
+# approved disclaimer, even if the pipeline ever fails to set it.
+app.add_middleware(DisclaimerMiddleware)
 
 app.include_router(health.router)
 app.include_router(analysis.router, prefix="/api/v1")
