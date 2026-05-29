@@ -1,0 +1,12 @@
+// Committed signing config (safe to commit — contains no account identifiers).
+//
+// The personal Apple Development Team ID is kept out of version control: it
+// lives in the gitignored Signing.local.xcconfig and is pulled in by the
+// OPTIONAL include below. Because XcodeGen reads this file (not the include
+// target) when generating, no Team ID is baked into the tracked project.pbxproj;
+// Xcode resolves it at build time.
+//
+// Missing Signing.local.xcconfig (e.g. a fresh clone) is fine: the optional
+// include is skipped, so no team is set — simulator builds still work, and a
+// device build just needs the team picked once in Xcode → Signing & Capabilities.
+#include? "Signing.local.xcconfig"

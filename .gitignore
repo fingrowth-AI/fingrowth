@@ -39,3 +39,6 @@ AGENTS.md
 
 # Vendored llama.cpp source + built XCFramework (large; rebuild via build-xcframework.sh)
 ios/vendor/
+
+# Local signing (personal Apple Team ID) — never committed
+ios/Signing.local.xcconfig

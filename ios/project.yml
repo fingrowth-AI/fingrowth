@@ -62,11 +62,15 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGNING_REQUIRED: NO
+        # DEVELOPMENT_TEAM is supplied by the gitignored Signing.local.xcconfig
+        # (configFiles below) so a personal Team ID never lands in committed
+        # source. Without that file the simulator still builds; a device build
+        # just needs the team picked once in Xcode.
+        CODE_SIGN_STYLE: Automatic
         CODE_SIGNING_ALLOWED: YES
-        DEVELOPMENT_TEAM: ""
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
 
   FinGrowthTests:
     type: bundle.unit-test
