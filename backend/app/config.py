@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     sec_edgar_user_agent: str = "FinGrowth/1.0 (research-tool)"
 
+    # Reject daily price data whose most-recent bar is older than this many
+    # calendar days (V7-02). Sized to absorb weekends plus a long holiday
+    # weekend so a normal market gap is tolerated, but genuinely stale data is
+    # refused rather than presented as the current close.
+    max_price_staleness_days: int = 5
+
     # Alpaca paper trading (paper-api only — never live endpoint)
     alpaca_api_key: str = ""
     alpaca_secret_key: str = ""

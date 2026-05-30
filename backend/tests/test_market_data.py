@@ -23,6 +23,7 @@ from app.tools.market_data import (
     DEFAULT_TTL_SECONDS,
     MissingAPIKeyError,
     RateLimitError,
+    StalePriceDataError,
     _clear_cache,
     get_company_overview,
     get_daily_prices,
@@ -35,9 +36,15 @@ from app.tools.market_data import (
 
 @pytest.fixture(autouse=True)
 def _api_key_and_cache(monkeypatch):
-    """Every test starts with a fresh cache and a stubbed API key."""
+    """Every test starts with a fresh cache and a stubbed API key.
+
+    ``_today`` is pinned just after the fixture series' newest bar (2025-01-31)
+    so the V7-02 staleness check treats the canned payloads as current. Tests
+    that exercise staleness override it explicitly.
+    """
     monkeypatch.setattr(settings, "alpha_vantage_api_key", "test-key")
     monkeypatch.setattr(market_data, "DEFAULT_MIN_REQUEST_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(market_data, "_today", lambda: date(2025, 2, 2))
     _clear_cache()
     yield
     _clear_cache()
@@ -273,6 +280,98 @@ async def test_cache_misses_are_paced_to_avoid_burst_throttle(monkeypatch):
     assert calls == 2
     assert len(sleeps) == 1
     assert sleeps[0] == pytest.approx(1.1)
+
+
+# ---------------------------------------------------------------------------
+# Staleness — V7-02
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_price_data_is_rejected(monkeypatch):
+    """A newest bar older than the threshold raises rather than returning a
+    price that no longer reflects the market."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        # Newest bar is 2025-01-31.
+        return httpx.Response(200, json=_daily_payload(num_days=100))
+
+    # Two weeks later, with the default 5-day threshold, the data is stale.
+    monkeypatch.setattr(market_data, "_today", lambda: date(2025, 2, 14))
+
+    async with _make_client(handler) as client:
+        with pytest.raises(StalePriceDataError):
+            await get_daily_prices("MSFT", 30, client=client)
+
+
+@pytest.mark.asyncio
+async def test_fresh_price_data_within_threshold_passes(monkeypatch):
+    """A newest bar inside the threshold (e.g. a long weekend gap) is served."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_daily_payload(num_days=100))
+
+    # 4 days after the newest bar — under the default 5-day threshold.
+    monkeypatch.setattr(market_data, "_today", lambda: date(2025, 2, 4))
+
+    async with _make_client(handler) as client:
+        bars = await get_daily_prices("MSFT", 30, client=client)
+
+    assert len(bars) == 30
+
+
+@pytest.mark.asyncio
+async def test_staleness_threshold_is_configurable(monkeypatch):
+    """The threshold honors the explicit override and Settings default."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_daily_payload(num_days=100))
+
+    monkeypatch.setattr(market_data, "_today", lambda: date(2025, 2, 14))
+
+    async with _make_client(handler) as client:
+        # A wider explicit threshold accepts the same 14-day-old data.
+        bars = await get_daily_prices(
+            "MSFT", 30, max_staleness_days=30, client=client
+        )
+        assert len(bars) == 30
+
+        # Settings drives the default path.
+        _clear_cache()
+        monkeypatch.setattr(settings, "max_price_staleness_days", 30)
+        bars2 = await get_daily_prices("MSFT", 30, client=client)
+        assert len(bars2) == 30
+
+
+@pytest.mark.asyncio
+async def test_non_positive_threshold_disables_staleness_check(monkeypatch):
+    """A non-positive threshold opts out of rejection entirely."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_daily_payload(num_days=100))
+
+    monkeypatch.setattr(market_data, "_today", lambda: date(2030, 1, 1))
+
+    async with _make_client(handler) as client:
+        bars = await get_daily_prices(
+            "MSFT", 30, max_staleness_days=0, client=client
+        )
+
+    assert len(bars) == 30
+
+
+@pytest.mark.asyncio
+async def test_no_fabricated_data_when_api_key_missing(monkeypatch):
+    """Production must never substitute a fixture: a missing key fails loudly
+    instead of returning sample bars."""
+    monkeypatch.setattr(settings, "alpha_vantage_api_key", "")
+
+    def handler(req: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("network must not be hit when key is missing")
+
+    async with _make_client(handler) as client:
+        with pytest.raises(MissingAPIKeyError):
+            await get_daily_prices("AAPL", 90, client=client)
 
 
 # ---------------------------------------------------------------------------

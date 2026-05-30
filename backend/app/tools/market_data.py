@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
@@ -44,6 +44,15 @@ class RateLimitError(MarketDataError):
 
 class MissingAPIKeyError(MarketDataError):
     """ALPHA_VANTAGE_API_KEY is not configured."""
+
+
+class StalePriceDataError(MarketDataError):
+    """The most-recent price bar is older than the configured staleness threshold.
+
+    Raised instead of returning data so a stale close is never presented as the
+    current market price (V7-02). Upstream graceful degradation turns this into
+    a failed price source rather than a wrong number.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +89,11 @@ def _clear_cache() -> None:
 
 def _monotonic() -> float:
     return time.monotonic()
+
+
+def _today() -> date:
+    """Indirection so the staleness check can be pinned in tests."""
+    return datetime.now(tz=UTC).date()
 
 
 async def _rate_limit_sleep(delay: float) -> None:
@@ -147,12 +161,19 @@ async def get_daily_prices(
     days: int = 90,
     *,
     ttl: float = DEFAULT_TTL_SECONDS,
+    max_staleness_days: int | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> list[PriceBar]:
     """Return the most-recent ``days`` daily OHLCV bars for ``ticker``.
 
     The full AV response is cached per-ticker; varying ``days`` slices off the
     cached series without re-issuing a request.
+
+    ``max_staleness_days`` bounds how old the newest bar may be (V7-02). ``None``
+    uses :attr:`Settings.max_price_staleness_days`; a non-positive value disables
+    the check. If the newest bar is older than the threshold the call raises
+    :class:`StalePriceDataError` rather than returning a price that no longer
+    reflects the market.
     """
     if days <= 0:
         raise ValueError("days must be > 0")
@@ -194,10 +215,40 @@ async def get_daily_prices(
                     volume=int(row["5. volume"]),
                 )
             )
+        _reject_if_stale(symbol, bars, max_staleness_days)
         return bars
     finally:
         if own_client:
             await client.aclose()
+
+
+def _reject_if_stale(
+    symbol: str,
+    bars: list[PriceBar],
+    max_staleness_days: int | None,
+) -> None:
+    """Raise :class:`StalePriceDataError` if the newest bar is too old (V7-02).
+
+    ``bars`` arrive newest-first. An empty series is left to the caller (it is
+    an absence of data, not stale data). A non-positive threshold disables the
+    check.
+    """
+    if not bars:
+        return
+    threshold = (
+        settings.max_price_staleness_days
+        if max_staleness_days is None
+        else max_staleness_days
+    )
+    if threshold <= 0:
+        return
+    newest = bars[0].date
+    age_days = (_today() - newest).days
+    if age_days > threshold:
+        raise StalePriceDataError(
+            f"{symbol} latest close is {age_days} days old "
+            f"(bar {newest.isoformat()}), exceeds {threshold}-day threshold"
+        )
 
 
 async def get_company_overview(
