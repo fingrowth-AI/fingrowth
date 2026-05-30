@@ -111,18 +111,27 @@ final class APIClient: Sendable {
         )
     }
 
+    // V7-05: placeholder Bearer token sent until Sign in with Apple (V8)
+    // issues a real session token. The backend tolerates any token (or none)
+    // and resolves to the default user, but the client always sends the header
+    // so the auth-shaped contract is exercised end to end.
+    static let placeholderToken = "v7-placeholder-token"
+
     private let baseURLProvider: @Sendable () -> String
+    private let tokenProvider: @Sendable () -> String
     private let transport: SSEByteStreamProviding
     private let retryPolicy: RetryPolicy
     private let sleeper: @Sendable (Duration) async throws -> Void
 
     init(
         baseURLProvider: @escaping @Sendable () -> String,
+        tokenProvider: @escaping @Sendable () -> String = { APIClient.placeholderToken },
         transport: SSEByteStreamProviding = URLSessionSSETransport(),
         retryPolicy: RetryPolicy = .default,
         sleeper: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.baseURLProvider = baseURLProvider
+        self.tokenProvider = tokenProvider
         self.transport = transport
         self.retryPolicy = retryPolicy
         self.sleeper = sleeper
@@ -134,11 +143,13 @@ final class APIClient: Sendable {
         retryPolicy: RetryPolicy = .default
     ) {
         // AppSettings is @Observable / @MainActor-adjacent; capture it weakly
-        // through a closure so APIClient itself stays Sendable.
+        // through a closure so APIClient itself stays Sendable. The token is a
+        // placeholder for now; V8 swaps in the stored session token here.
         self.init(
             baseURLProvider: { [weak settings] in
                 settings?.backendURL ?? AppSettings.defaultBackendURL
             },
+            tokenProvider: { APIClient.placeholderToken },
             transport: transport,
             retryPolicy: retryPolicy
         )
@@ -281,6 +292,9 @@ final class APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        // V7-05: always send the Bearer header so the backend's auth contract is
+        // exercised. The token is a placeholder until V8 issues a real one.
+        request.setValue("Bearer \(tokenProvider())", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 60
 
         let body = AnalysisRequestBody(

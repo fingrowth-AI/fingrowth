@@ -53,6 +53,32 @@ def test_module_level_graph_is_compiled():
     assert "path" in result
 
 
+def test_user_id_is_threaded_to_nodes():
+    """V7-05: user_id is declared in AgentState, so a node can read it and it
+    survives in state. (LangGraph drops keys not declared in the typed state,
+    which is why the declaration matters.)"""
+    from langgraph.graph import END, START, StateGraph
+
+    seen: dict[str, str] = {}
+
+    def _reader(state: AgentState) -> dict:
+        seen["user_id"] = state.get("user_id", "<missing>")
+        return {}
+
+    graph = StateGraph(AgentState)
+    graph.add_node("reader", _reader)
+    graph.add_edge(START, "reader")
+    graph.add_edge("reader", END)
+    compiled = graph.compile()
+
+    result = compiled.invoke(
+        {"query": "q", "ticker": "AAPL", "user_id": "user-123"}
+    )
+
+    assert seen["user_id"] == "user-123"  # the node actually saw it
+    assert result.get("user_id") == "user-123"  # and it persisted in state
+
+
 # ---------------------------------------------------------------------------
 # Routing paths
 # ---------------------------------------------------------------------------

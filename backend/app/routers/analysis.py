@@ -38,6 +38,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.agents.graph import agent_graph
+from app.auth import CurrentUser
 from app.models.risk import STANDARD_DISCLAIMER
 from app.models.schemas import (
     AnalysisData,
@@ -203,6 +204,7 @@ def _build_response(
 async def _run_pipeline(
     body: AnalysisQuery,
     session_id: uuid.UUID,
+    user_id: uuid.UUID,
 ) -> AsyncIterator[str]:
     """Drive the LangGraph pipeline and yield SSE frames as it progresses.
 
@@ -211,6 +213,9 @@ async def _run_pipeline(
     the next progress event. The first ``researching`` frame is emitted before
     invoking the graph so the iOS client sees activity immediately rather than
     only after the first network round-trip into the data tools.
+
+    ``user_id`` (resolved by :func:`get_current_user`) is carried in the graph
+    state so per-user persistence (V8/V12-06) can attribute work to its owner.
     """
     ticker = body.ticker.upper()
     initial_state: dict[str, Any] = {
@@ -223,6 +228,7 @@ async def _run_pipeline(
             else None
         ),
         "session_id": str(session_id),
+        "user_id": str(user_id),
     }
 
     try:
@@ -267,17 +273,23 @@ async def _run_pipeline(
 
 
 @router.post("/query")
-async def query_analysis(body: AnalysisQuery) -> StreamingResponse:
+async def query_analysis(
+    body: AnalysisQuery,
+    current_user: CurrentUser,
+) -> StreamingResponse:
     """Stream the multi-agent pipeline's progress and final result as SSE.
 
     A ``StreamingResponse`` is returned (rather than ``AnalysisResponse``) so
     intermediate progress events can be emitted as the graph runs. The final
     ``final_result`` event carries an AnalysisResponse-shaped payload, matching
     the schema documented in section 7.2 of the design doc.
+
+    Accepts an ``Authorization: Bearer`` header resolved to ``current_user`` by
+    :func:`get_current_user` (the default user until V8).
     """
     session_id = body.session_id or uuid.uuid4()
     return StreamingResponse(
-        _run_pipeline(body, session_id),
+        _run_pipeline(body, session_id, current_user),
         media_type="text/event-stream",
         headers={
             # Disable proxy buffering so events are flushed promptly even

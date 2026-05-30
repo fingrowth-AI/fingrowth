@@ -51,6 +51,7 @@
 		A056AADBADD24B169DF9CAF6 /* ResearchHistoryEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = F93DD0A08011A8FF64F86C93 /* ResearchHistoryEntry.swift */; };
 		A2DF56727501261594A1D602 /* PrivateLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 198A6B6B9353E870FAB7CEE7 /* PrivateLedger.swift */; };
 		AA06C68267684440E77D509C /* IndicatorFormatterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37D75D924AED7344411C3713 /* IndicatorFormatterTests.swift */; };
+		AA4C4FFBB90D0982E7287FC6 /* PaperTradingClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 085E8AAAFDB307730078AEE0 /* PaperTradingClientTests.swift */; };
 		AF23C86D9858C8DB00292228 /* AuditLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B65300994D15D5BD64A8468 /* AuditLogTests.swift */; };
 		AFE226D4B28958B83F321D0C /* PrivacyAuditLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56CA8FBD5A4D2A5F43978972 /* PrivacyAuditLog.swift */; };
 		BD91929020BC96205654D57C /* DifferentialPrivacy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DE69FBE300A997A0AB294EA /* DifferentialPrivacy.swift */; };
@@ -94,6 +95,7 @@
 		05A9DADCFCE177368B1D4009 /* AnalysisStreamController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisStreamController.swift; sourceTree = "<group>"; };
 		06C4B2465AD9E4584A96CF25 /* ThermalMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThermalMonitor.swift; sourceTree = "<group>"; };
 		076DA35D0DC90C95C18D4ED6 /* PortfolioStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortfolioStore.swift; sourceTree = "<group>"; };
+		085E8AAAFDB307730078AEE0 /* PaperTradingClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTradingClientTests.swift; sourceTree = "<group>"; };
 		089AB79048AEAEF9E5813D21 /* CSVPrivacyParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSVPrivacyParser.swift; sourceTree = "<group>"; };
 		0A342BC6A3B65965BF13E067 /* AppDataLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDataLocation.swift; sourceTree = "<group>"; };
 		0B0C8FD844FA85FD76A0CE98 /* llama.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = llama.xcframework; path = "vendor/llama.cpp/build-apple/llama.xcframework"; sourceTree = "<group>"; };
@@ -145,7 +147,7 @@
 		EE9E29459E39FDDE789D1BC8 /* ModelDownloadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloadView.swift; sourceTree = "<group>"; };
 		F21182A4D3B5EB8B0761D7D2 /* AnalysisAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisAPI.swift; sourceTree = "<group>"; };
 		F93DD0A08011A8FF64F86C93 /* ResearchHistoryEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchHistoryEntry.swift; sourceTree = "<group>"; };
-		"TEMP_56880C5F-BBB8-4DB5-98F4-CBC82A496C92" /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		"TEMP_BAC640C2-0B5A-4CBE-8C8E-8A8BA8022D1E" /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -223,6 +225,7 @@
 				7BDC3EC27889F86113C60055 /* GemmaServiceTests.swift */,
 				37D75D924AED7344411C3713 /* IndicatorFormatterTests.swift */,
 				0043C2C98821F81537CE940F /* IntentRouterTests.swift */,
+				085E8AAAFDB307730078AEE0 /* PaperTradingClientTests.swift */,
 				93E54EC1B36614D39A367FD8 /* PrivacyAuditLogTests.swift */,
 				0E739B4C1D34CA02A016D03A /* QueryRewriterTests.swift */,
 				AEDAF670FA6CB839EB3B3998 /* RecontextualizerTests.swift */,
@@ -279,10 +282,10 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
-		"TEMP_A787FA18-ADB1-48EB-B9DA-520AF5BF6301" /* ios */ = {
+		"TEMP_405551A4-D8C0-4DCF-ACA3-7792608D088D" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_56880C5F-BBB8-4DB5-98F4-CBC82A496C92" /* Signing.xcconfig */,
+				"TEMP_BAC640C2-0B5A-4CBE-8C8E-8A8BA8022D1E" /* Signing.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -381,6 +384,7 @@
 				5B8AD7768245F3E0CA1626B6 /* GemmaServiceTests.swift in Sources */,
 				AA06C68267684440E77D509C /* IndicatorFormatterTests.swift in Sources */,
 				73E3B75AF10E51094E857B82 /* IntentRouterTests.swift in Sources */,
+				AA4C4FFBB90D0982E7287FC6 /* PaperTradingClientTests.swift in Sources */,
 				4988FCA29B9110A17C6D5E4B /* PrivacyAuditLogTests.swift in Sources */,
 				DC932C77BA806F005036800B /* QueryRewriterTests.swift in Sources */,
 				96B5EBC50AB6DF53A85A89A7 /* RecontextualizerTests.swift in Sources */,
@@ -445,7 +449,7 @@
 /* Begin XCBuildConfiguration section */
 		342022D507C6E6CE02FCAE6F /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_56880C5F-BBB8-4DB5-98F4-CBC82A496C92" /* Signing.xcconfig */;
+			baseConfigurationReference = "TEMP_BAC640C2-0B5A-4CBE-8C8E-8A8BA8022D1E" /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
@@ -647,7 +651,7 @@
 		};
 		EDF1E69E96337CEEEE594C6C /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_56880C5F-BBB8-4DB5-98F4-CBC82A496C92" /* Signing.xcconfig */;
+			baseConfigurationReference = "TEMP_BAC640C2-0B5A-4CBE-8C8E-8A8BA8022D1E" /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;

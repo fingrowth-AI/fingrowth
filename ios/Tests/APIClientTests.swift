@@ -171,6 +171,37 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(sectors["technology"] as? Double, 0.8)
     }
 
+    // MARK: - Auth-shaped contract (V7-05)
+
+    func testRequestAlwaysSendsBearerAuthorizationHeader() async throws {
+        let transport = MockSSETransport(lines: ["event: progress", "data: {\"stage\": \"researching\"}", ""])
+        let client = makeClient(transport: transport)
+
+        var iterator = client.streamAnalysis(query: sampleQuery()).makeAsyncIterator()
+        _ = try await iterator.next()
+
+        let request = try XCTUnwrap(transport.requests.first)
+        let authorization = try XCTUnwrap(request.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertTrue(authorization.hasPrefix("Bearer "), "expected a Bearer header, got \(authorization)")
+        XCTAssertEqual(authorization, "Bearer \(APIClient.placeholderToken)")
+    }
+
+    func testRequestUsesInjectedToken() async throws {
+        let transport = MockSSETransport(lines: ["event: progress", "data: {\"stage\": \"researching\"}", ""])
+        let client = APIClient(
+            baseURLProvider: { "http://test.local" },
+            tokenProvider: { "session-xyz" },
+            transport: transport,
+            sleeper: { _ in }
+        )
+
+        var iterator = client.streamAnalysis(query: sampleQuery()).makeAsyncIterator()
+        _ = try await iterator.next()
+
+        let request = try XCTUnwrap(transport.requests.first)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer session-xyz")
+    }
+
     // MARK: - Error path: SSE error frame surfaces as serverError event
 
     func testServerErrorFrameIsEmittedAsServerErrorEvent() async throws {

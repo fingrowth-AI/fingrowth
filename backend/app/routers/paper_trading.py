@@ -29,6 +29,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.auth import CurrentUser
 from app.models.trading import Order, PortfolioHistory, Position
 from app.tools.market_data import (
     MarketDataError,
@@ -120,7 +121,7 @@ def _map_client_error(exc: Exception) -> HTTPException:
 
 
 @router.post("/order", response_model=Order)
-async def place_order(body: PlaceOrderRequest) -> Order:
+async def place_order(body: PlaceOrderRequest, current_user: CurrentUser) -> Order:
     """Submit a paper order. Returns the created Order (typically ``accepted``).
 
     Validation that's cheap to do client-side (``side`` enum, positive
@@ -150,7 +151,7 @@ async def place_order(body: PlaceOrderRequest) -> Order:
 
 
 @router.get("/positions", response_model=PositionsResponse)
-async def list_positions() -> PositionsResponse:
+async def list_positions(current_user: CurrentUser) -> PositionsResponse:
     """Return the current paper positions, empty list if none."""
     try:
         return PositionsResponse(positions=await get_positions())
@@ -160,7 +161,9 @@ async def list_positions() -> PositionsResponse:
 
 
 @router.get("/orders", response_model=OrdersResponse)
-async def list_orders(limit: int = 50, status: str = "all") -> OrdersResponse:
+async def list_orders(
+    current_user: CurrentUser, limit: int = 50, status: str = "all"
+) -> OrdersResponse:
     """Return paper order history. ``status`` filters by Alpaca's vocabulary."""
     if limit <= 0:
         raise HTTPException(status_code=400, detail="limit must be > 0")
@@ -173,7 +176,7 @@ async def list_orders(limit: int = 50, status: str = "all") -> OrdersResponse:
 
 @router.get("/portfolio-history", response_model=PortfolioHistory)
 async def portfolio_history(
-    period: str = "1M", timeframe: str = "1D"
+    current_user: CurrentUser, period: str = "1M", timeframe: str = "1D"
 ) -> PortfolioHistory:
     """Account equity over time for the Performance tracker.
 
@@ -208,7 +211,9 @@ class BenchmarkResponse(BaseModel):
 
 
 @router.get("/benchmark", response_model=BenchmarkResponse)
-async def benchmark(symbol: str = "SPY", days: int = 30) -> BenchmarkResponse:
+async def benchmark(
+    current_user: CurrentUser, symbol: str = "SPY", days: int = 30
+) -> BenchmarkResponse:
     """Return ``days`` of daily closing prices for ``symbol`` (default SPY).
 
     Designed for the iOS Portfolio "Performance" sub-view (P4-04 acceptance:

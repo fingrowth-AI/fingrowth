@@ -58,21 +58,27 @@ private struct OrdersEnvelope: Decodable {
 
 final class PaperTradingClient: PaperTradingService {
     private let baseURLProvider: @Sendable () -> String
+    private let tokenProvider: @Sendable () -> String
     private let session: URLSession
 
     init(
         baseURLProvider: @escaping @Sendable () -> String,
+        tokenProvider: @escaping @Sendable () -> String = { APIClient.placeholderToken },
         session: URLSession = .shared
     ) {
         self.baseURLProvider = baseURLProvider
+        self.tokenProvider = tokenProvider
         self.session = session
     }
 
     convenience init(settings: AppSettings, session: URLSession = .shared) {
+        // Placeholder token until V8 issues a real session token (V7-05); the
+        // paper routes accept current_user, so every call is auth-shaped.
         self.init(
             baseURLProvider: { [weak settings] in
                 settings?.backendURL ?? AppSettings.defaultBackendURL
             },
+            tokenProvider: { APIClient.placeholderToken },
             session: session
         )
     }
@@ -141,6 +147,9 @@ final class PaperTradingClient: PaperTradingService {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // V7-05: every iOS API call is auth-shaped — always send the Bearer
+        // header so V8's per-user trade partitioning is a fill, not a retrofit.
+        request.setValue("Bearer \(tokenProvider())", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 30
         return request
     }

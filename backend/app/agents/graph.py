@@ -48,6 +48,10 @@ class AgentState(TypedDict, total=False):
     analysis_type: str
     portfolio_profile: dict[str, Any] | None
     session_id: str
+    # Owner of the request (V7-05). Declared so LangGraph threads it through the
+    # typed state — undeclared keys are dropped — letting V8 persistence nodes
+    # attribute work to the authenticated user. Default user until V8.
+    user_id: str
     # --- router output ---
     route: str
     # --- agent outputs ---
