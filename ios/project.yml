@@ -51,6 +51,10 @@ targets:
         PRODUCT_NAME: FinGrowth
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
+        # V8-01: apply the entitlements file so the app declares the Sign in with
+        # Apple capability. Builds on the simulator without a provisioning
+        # profile; a paid team is needed to sign it for device/TestFlight.
+        CODE_SIGN_ENTITLEMENTS: FinGrowth/FinGrowth.entitlements
         # Partial plist merged with the generated keys — adds the ATS local-net
         # exception + local-network usage string so the device can reach the
         # backend over plaintext HTTP on the LAN. See FinGrowth/Info.plist.

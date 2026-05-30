@@ -3,12 +3,19 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var settings: AppSettings
     @Bindable var gemma: GemmaService
+    @Bindable var authCoordinator: AuthCoordinator
+    let sessionStore: SessionStore
 
     var body: some View {
         NavigationStack {
             ZStack {
                 MarketBackground()
                 Form {
+                    AccountSectionView(
+                        coordinator: authCoordinator,
+                        sessionStore: sessionStore
+                    )
+
                     Section {
                         Picker("Appearance", selection: $settings.appearance) {
                             ForEach(AppAppearance.allCases) { appearance in

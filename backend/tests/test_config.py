@@ -42,10 +42,14 @@ def test_production_requires_openai_key(monkeypatch):
 
 
 def test_production_with_openai_key_ok(monkeypatch):
-    """Production mode is valid when OPENAI_API_KEY is set."""
+    """Production mode is valid when OPENAI_API_KEY and a strong secret are set."""
     from app.config import Settings
 
-    s = Settings(app_env="production", openai_api_key="sk-test-key")
+    s = Settings(
+        app_env="production",
+        openai_api_key="sk-test-key",
+        session_jwt_secret="a" * 40,
+    )
     assert s.app_env == "production"
     assert s.openai_api_key == "sk-test-key"
 
@@ -56,3 +60,51 @@ def test_development_does_not_require_openai_key():
 
     s = Settings(app_env="development", openai_api_key="")
     assert s.app_env == "development"
+
+
+# ---------------------------------------------------------------------------
+# V8-01: production must not run with a forgeable session-signing secret.
+# ---------------------------------------------------------------------------
+
+_STRONG_SECRET = "a" * 40
+
+
+def test_production_rejects_default_session_secret():
+    from app.config import DEV_SESSION_SECRET, Settings
+
+    with pytest.raises((ValidationError, ValueError), match="SESSION_JWT_SECRET"):
+        Settings(
+            app_env="production",
+            openai_api_key="k",
+            session_jwt_secret=DEV_SESSION_SECRET,
+        )
+
+
+def test_production_rejects_empty_session_secret():
+    from app.config import Settings
+
+    with pytest.raises((ValidationError, ValueError), match="SESSION_JWT_SECRET"):
+        Settings(app_env="production", openai_api_key="k", session_jwt_secret="")
+
+
+def test_production_rejects_short_session_secret():
+    from app.config import Settings
+
+    with pytest.raises((ValidationError, ValueError), match="SESSION_JWT_SECRET"):
+        Settings(app_env="production", openai_api_key="k", session_jwt_secret="short")
+
+
+def test_production_accepts_strong_session_secret():
+    from app.config import Settings
+
+    s = Settings(
+        app_env="production", openai_api_key="k", session_jwt_secret=_STRONG_SECRET
+    )
+    assert s.session_jwt_secret == _STRONG_SECRET
+
+
+def test_development_tolerates_default_session_secret():
+    from app.config import DEV_SESSION_SECRET, Settings
+
+    s = Settings(app_env="development", session_jwt_secret=DEV_SESSION_SECRET)
+    assert s.session_jwt_secret == DEV_SESSION_SECRET

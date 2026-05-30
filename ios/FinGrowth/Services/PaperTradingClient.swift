@@ -71,14 +71,21 @@ final class PaperTradingClient: PaperTradingService {
         self.session = session
     }
 
-    convenience init(settings: AppSettings, session: URLSession = .shared) {
-        // Placeholder token until V8 issues a real session token (V7-05); the
-        // paper routes accept current_user, so every call is auth-shaped.
+    convenience init(
+        settings: AppSettings,
+        sessionStore: SessionStore? = nil,
+        session: URLSession = .shared
+    ) {
+        // Bearer token comes from the signed-in session (V8-01), falling back to
+        // the placeholder before sign-in; the paper routes accept current_user,
+        // so every call is auth-shaped.
         self.init(
             baseURLProvider: { [weak settings] in
                 settings?.backendURL ?? AppSettings.defaultBackendURL
             },
-            tokenProvider: { APIClient.placeholderToken },
+            tokenProvider: { [weak sessionStore] in
+                sessionStore?.token ?? APIClient.placeholderToken
+            },
             session: session
         )
     }

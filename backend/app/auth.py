@@ -22,13 +22,14 @@ from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.database import DEFAULT_USER_ID
+from app.services.session_token import verify_session_token
 
-# auto_error=False: the Bearer header is optional today, so a missing or
-# malformed header must not 403 — it simply resolves to the default user. The
-# scheme still advertises bearer auth in the OpenAPI docs.
+# auto_error=False: the Bearer header is optional, so a missing or malformed
+# header must not 403 — it resolves to the default user. The scheme still
+# advertises bearer auth in the OpenAPI docs.
 bearer_scheme = HTTPBearer(
     auto_error=False,
-    description="Bearer session token. Tolerated but not yet verified (V8).",
+    description="Bearer session token from POST /auth/apple.",
 )
 
 
@@ -37,16 +38,16 @@ async def get_current_user(
         HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
     ] = None,
 ) -> uuid.UUID:
-    """Resolve the requesting user's id.
+    """Resolve the requesting user's id from the Bearer session token (V8-01).
 
-    The one place authentication is resolved. For now any Bearer token (or none)
-    is tolerated and ignored, and the default user id is returned; V8 verifies
-    the token here and maps it to a real user row.
+    The one place authentication is resolved. A valid session token (issued by
+    POST /auth/apple) resolves to its user; anything else — no header, the
+    pre-sign-in placeholder, an expired or forged token — falls back to the
+    default user. The fallback is safe: an unverifiable token can never resolve
+    to *another* user, only to the shared default, so it grants no escalation.
     """
-    # ``credentials`` is intentionally unused for now — accepted and tolerated.
-    # V8 verifies credentials.credentials (the JWT) and resolves the user.
-    del credentials
-    return DEFAULT_USER_ID
+    token = credentials.credentials if credentials is not None else None
+    return verify_session_token(token) or DEFAULT_USER_ID
 
 
 # Annotated dependency alias so endpoints read as ``current_user: CurrentUser``.

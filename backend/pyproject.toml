@@ -23,6 +23,9 @@ dependencies = [
     "asyncpg>=0.30.0",
     "redis>=5.0.0",
     "python-multipart>=0.0.12",
+    # Sign in with Apple (V8-01): verify Apple's RS256 identity tokens and sign
+    # our own HS256 session tokens. The [crypto] extra pulls in `cryptography`.
+    "pyjwt[crypto]>=2.8.0",
 ]
 
 [project.optional-dependencies]

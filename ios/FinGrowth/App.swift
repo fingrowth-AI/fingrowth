@@ -5,6 +5,8 @@ import SwiftData
 struct FinGrowthApp: App {
     @State private var settings = AppSettings()
     @State private var gemma = GemmaService.shared
+    @State private var authCoordinator: AuthCoordinator
+    private let sessionStore: SessionStore
     private let container: ModelContainer
     private let apiClient: APIClient
     private let paperTradingClient: PaperTradingClient
@@ -17,8 +19,17 @@ struct FinGrowthApp: App {
         } catch {
             fatalError("Failed to initialize SwiftData container: \(error)")
         }
-        apiClient = APIClient(settings: settings)
-        paperTradingClient = PaperTradingClient(settings: settings)
+        // V8-01: the session store is the single source of truth for the Bearer
+        // token; both API clients read it, and the auth coordinator writes it
+        // after Sign in with Apple.
+        let sessionStore = SessionStore()
+        self.sessionStore = sessionStore
+        apiClient = APIClient(settings: settings, sessionStore: sessionStore)
+        paperTradingClient = PaperTradingClient(settings: settings, sessionStore: sessionStore)
+        _authCoordinator = State(initialValue: AuthCoordinator(
+            authService: AuthClient(settings: settings),
+            sessionStore: sessionStore
+        ))
     }
 
     var body: some Scene {
@@ -27,7 +38,9 @@ struct FinGrowthApp: App {
                 settings: settings,
                 apiClient: apiClient,
                 paperTradingClient: paperTradingClient,
-                gemma: gemma
+                gemma: gemma,
+                authCoordinator: authCoordinator,
+                sessionStore: sessionStore
             )
         }
         .modelContainer(container)

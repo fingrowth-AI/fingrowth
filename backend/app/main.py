@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 from app.middleware.disclaimer import DisclaimerMiddleware
-from app.routers import analysis, health, paper_trading
+from app.routers import analysis, auth, health, paper_trading
 
 app = FastAPI(
     title="FinGrowth API",
@@ -17,5 +17,6 @@ app = FastAPI(
 app.add_middleware(DisclaimerMiddleware)
 
 app.include_router(health.router)
+app.include_router(auth.router, prefix="/api/v1")
 app.include_router(analysis.router, prefix="/api/v1")
 app.include_router(paper_trading.router, prefix="/api/v1")

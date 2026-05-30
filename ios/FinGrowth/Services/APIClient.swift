@@ -139,17 +139,21 @@ final class APIClient: Sendable {
 
     convenience init(
         settings: AppSettings,
+        sessionStore: SessionStore? = nil,
         transport: SSEByteStreamProviding = URLSessionSSETransport(),
         retryPolicy: RetryPolicy = .default
     ) {
-        // AppSettings is @Observable / @MainActor-adjacent; capture it weakly
-        // through a closure so APIClient itself stays Sendable. The token is a
-        // placeholder for now; V8 swaps in the stored session token here.
+        // AppSettings/SessionStore are @Observable; capture them weakly through
+        // closures so APIClient itself stays Sendable. The Bearer token comes
+        // from the signed-in session (V8-01), falling back to the placeholder
+        // before sign-in.
         self.init(
             baseURLProvider: { [weak settings] in
                 settings?.backendURL ?? AppSettings.defaultBackendURL
             },
-            tokenProvider: { APIClient.placeholderToken },
+            tokenProvider: { [weak sessionStore] in
+                sessionStore?.token ?? APIClient.placeholderToken
+            },
             transport: transport,
             retryPolicy: retryPolicy
         )

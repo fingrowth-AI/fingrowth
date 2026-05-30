@@ -6,6 +6,8 @@ struct RootTabView: View {
     let apiClient: APIClient
     let paperTradingClient: PaperTradingService
     @Bindable var gemma: GemmaService
+    @Bindable var authCoordinator: AuthCoordinator
+    let sessionStore: SessionStore
     @State private var selection: RootTab = .research
     @State private var paperTradePrefill = PaperTradePrefill()
     @Environment(\.modelContext) private var modelContext
@@ -82,7 +84,12 @@ struct RootTabView: View {
         case .privacy:
             PrivacyView()
         case .settings:
-            SettingsView(settings: settings, gemma: gemma)
+            SettingsView(
+                settings: settings,
+                gemma: gemma,
+                authCoordinator: authCoordinator,
+                sessionStore: sessionStore
+            )
         }
     }
 }

@@ -5,6 +5,12 @@ from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Committed development default for the session-signing secret. Referenced by
+# both the field default and the production validator so a deploy can never
+# silently sign tokens with this publicly known value.
+DEV_SESSION_SECRET = "dev-insecure-session-secret-change-me"
+_MIN_SESSION_SECRET_LEN = 32
+
 # Resolve env-file paths against this file's location so they work regardless
 # of where Python is invoked from (pytest in backend/, docker-compose in repo
 # root, IDE runners with arbitrary cwd).
@@ -52,11 +58,33 @@ class Settings(BaseSettings):
     alpaca_secret_key: str = ""
     alpaca_base_url: str = "https://paper-api.alpaca.markets"
 
+    # Sign in with Apple (V8-01).
+    # ``apple_client_id`` is the audience the Apple identity token must carry —
+    # the app's bundle id. ``apple_issuer`` / ``apple_keys_url`` point at Apple.
+    apple_client_id: str = "com.fingrowth.FinGrowth"
+    apple_issuer: str = "https://appleid.apple.com"
+    apple_keys_url: str = "https://appleid.apple.com/auth/keys"
+    # Secret used to sign our own session tokens (HS256). MUST be overridden in
+    # production — the validator below refuses to start with the dev default.
+    session_jwt_secret: str = DEV_SESSION_SECRET
+    session_issuer: str = "fingrowth"
+    session_token_ttl_seconds: int = 60 * 60 * 24 * 30  # 30 days
+
     @model_validator(mode="after")
-    def _require_openai_in_production(self) -> "Settings":
-        if self.app_env == "production" and not self.openai_api_key:
+    def _require_production_secrets(self) -> "Settings":
+        if self.app_env != "production":
+            return self
+        if not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required when APP_ENV=production")
+        # Session tokens are HS256-signed: a default/empty/weak secret lets
+        # anyone forge a token for any user_id, so refuse to boot with one.
+        if (
+            self.session_jwt_secret in ("", DEV_SESSION_SECRET)
+            or len(self.session_jwt_secret) < _MIN_SESSION_SECRET_LEN
+        ):
             raise ValueError(
-                "OPENAI_API_KEY is required when APP_ENV=production"
+                "SESSION_JWT_SECRET must be set to a strong, non-default value "
+                f"(>= {_MIN_SESSION_SECRET_LEN} chars) when APP_ENV=production"
             )
         return self
 

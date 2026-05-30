@@ -88,13 +88,14 @@ async def test_endpoint_accepts_bearer_header(monkeypatch, client: AsyncClient):
 
 
 def test_all_api_v1_endpoints_accept_bearer_header():
-    """Every /api/v1 route depends on get_current_user, so the OpenAPI schema
-    advertises the bearer security scheme on each."""
+    """Every authenticated /api/v1 route depends on get_current_user, so the
+    OpenAPI schema advertises the bearer scheme on each. The /auth bootstrap
+    endpoint is exempt — it issues the token, so it can't require one."""
     schema = app.openapi()
     api_v1_paths = {
         path: item
         for path, item in schema["paths"].items()
-        if path.startswith("/api/v1/")
+        if path.startswith("/api/v1/") and not path.startswith("/api/v1/auth/")
     }
     assert api_v1_paths, "expected at least one /api/v1 path"
 
