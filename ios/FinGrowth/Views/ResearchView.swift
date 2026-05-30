@@ -318,29 +318,38 @@ struct ResearchView: View {
         if let final = controller.finalResult {
             VStack(alignment: .leading, spacing: 12) {
                 Card(title: "Result · \(final.ticker)") {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(final.analysis.confidence.replacingOccurrences(of: "_", with: " ").capitalized)
-                            .font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(confidenceColor(final.analysis.confidence).opacity(0.15))
-                            .foregroundStyle(confidenceColor(final.analysis.confidence))
-                            .clipShape(Capsule())
-                        Spacer()
-                        Button {
-                            enqueuePaperTrade(
-                                ticker: final.ticker,
-                                sourceQuery: query,
-                                sourceAnalysisType: analysisType,
-                                sourceConfidence: final.analysis.confidence,
-                                sourceResearchSessionID: lastPersistedSessionLinkID
-                            )
-                        } label: {
-                            Label("Test with paper trade", systemImage: "arrow.right.circle.fill")
-                                .font(.subheadline)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(final.analysis.confidence.replacingOccurrences(of: "_", with: " ").capitalized)
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(confidenceColor(final.analysis.confidence).opacity(0.15))
+                                .foregroundStyle(confidenceColor(final.analysis.confidence))
+                                .clipShape(Capsule())
+                            Spacer()
+                            Button {
+                                enqueuePaperTrade(
+                                    ticker: final.ticker,
+                                    sourceQuery: query,
+                                    sourceAnalysisType: analysisType,
+                                    sourceConfidence: final.analysis.confidence,
+                                    sourceResearchSessionID: lastPersistedSessionLinkID
+                                )
+                            } label: {
+                                Label("Test with paper trade", systemImage: "arrow.right.circle.fill")
+                                    .font(.subheadline)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
+
+                        // V7-03: data freshness — when the price data is "as of".
+                        if let freshness = final.research.freshness?.priceDisplay {
+                            Label(freshness, systemImage: "clock")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 

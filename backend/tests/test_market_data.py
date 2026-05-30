@@ -11,7 +11,7 @@ Acceptance:
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 import pytest
@@ -358,6 +358,35 @@ async def test_non_positive_threshold_disables_staleness_check(monkeypatch):
         )
 
     assert len(bars) == 30
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_preserves_original_fetch_time(monkeypatch):
+    """V7-03: a cache hit reports the original fetch time, not the serve time."""
+    first_fetch = datetime(2025, 2, 2, 10, 0, tzinfo=UTC)
+    later_serve = datetime(2025, 2, 2, 10, 45, tzinfo=UTC)
+    stamps = iter([first_fetch, later_serve])
+    monkeypatch.setattr(market_data, "_now_wall", lambda: next(stamps))
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_daily_payload(num_days=100))
+
+    async with _make_client(handler) as client:
+        await get_daily_prices("MSFT", 30, client=client)  # miss → stamps first_fetch
+        after_miss = market_data.daily_prices_fetched_at("MSFT")
+        await get_daily_prices("MSFT", 30, client=client)  # hit → no restamp
+        after_hit = market_data.daily_prices_fetched_at("MSFT")
+
+    assert after_miss == first_fetch
+    # The original fetch time survives the cache hit; the later serve time is
+    # never surfaced.
+    assert after_hit == first_fetch
+
+
+def test_daily_prices_fetched_at_none_when_uncached():
+    """No cache entry → no fetch time (the gather path falls back to now)."""
+    _clear_cache()
+    assert market_data.daily_prices_fetched_at("NOPE") is None
 
 
 @pytest.mark.asyncio

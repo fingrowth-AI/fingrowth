@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -16,6 +17,7 @@ __all__ = [
     "RiskFlag",
     "RiskReview",
     "PortfolioProfile",
+    "DataFreshness",
     "ResearchData",
     "AnalysisData",
     "AnalysisQuery",
@@ -38,9 +40,27 @@ class PortfolioProfile(BaseModel):
     risk_orientation: str | None = None
 
 
+class DataFreshness(BaseModel):
+    """When the underlying research data is 'as of' (V7-03).
+
+    ``price_as_of`` is the trading day of the most-recent price bar — intrinsic
+    to the data, so it is identical whether the series was just fetched or
+    served from cache, and is what the result renders as "as of close M/D".
+    ``price_fetched_at`` is the original wall-clock fetch time of that series
+    (cache-aware: a cache hit reports the first fetch, not the serve time).
+    ``news_as_of`` is when company news was last fetched (news is uncached, so
+    this is always the live fetch time).
+    """
+
+    price_as_of: date | None = None
+    price_fetched_at: datetime | None = None
+    news_as_of: datetime | None = None
+
+
 class ResearchData(BaseModel):
     filings: list[Any] = Field(default_factory=list)
     news: list[Any] = Field(default_factory=list)
+    freshness: DataFreshness = Field(default_factory=DataFreshness)
 
 
 class AnalysisData(BaseModel):

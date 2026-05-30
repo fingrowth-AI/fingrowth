@@ -59,7 +59,11 @@ class StalePriceDataError(MarketDataError):
 # In-memory TTL cache (key -> (value, expires_at_monotonic))
 # ---------------------------------------------------------------------------
 
-_cache: dict[str, tuple[Any, float]] = {}
+# Cache entry: (value, expires_at_monotonic, fetched_at_wall). ``fetched_at`` is
+# the wall-clock time of the original fetch and is preserved across cache hits
+# so data freshness reflects when it was actually retrieved, not when it was
+# served from cache (V7-03).
+_cache: dict[str, tuple[Any, float, datetime]] = {}
 _cache_lock = asyncio.Lock()
 _rate_limit_lock = asyncio.Lock()
 _last_request_at = 0.0
@@ -69,15 +73,30 @@ def _cache_get(key: str) -> Any | None:
     entry = _cache.get(key)
     if entry is None:
         return None
-    value, expires_at = entry
+    value, expires_at, _fetched_at = entry
     if time.monotonic() >= expires_at:
         _cache.pop(key, None)
         return None
     return value
 
 
+def _now_wall() -> datetime:
+    """Wall-clock indirection so the cache fetch timestamp is pinnable in tests."""
+    return datetime.now(tz=UTC)
+
+
 def _cache_set(key: str, value: Any, ttl: float) -> None:
-    _cache[key] = (value, time.monotonic() + ttl)
+    _cache[key] = (value, time.monotonic() + ttl, _now_wall())
+
+
+def daily_prices_fetched_at(ticker: str) -> datetime | None:
+    """Wall-clock time the cached daily series for ``ticker`` was first fetched.
+
+    Returns the original fetch time even when the series is currently served
+    from cache (V7-03); ``None`` if nothing is cached for the symbol.
+    """
+    entry = _cache.get(f"daily:{ticker.upper()}")
+    return entry[2] if entry else None
 
 
 def _clear_cache() -> None:

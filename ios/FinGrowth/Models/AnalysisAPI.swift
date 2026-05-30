@@ -24,9 +24,46 @@ struct AnalysisQuery: Codable, Sendable, Equatable {
     var sessionId: UUID?
 }
 
+// V7-03: "as of" timestamps for the underlying research data. The backend
+// emits ISO-8601 strings (a date for priceAsOf, datetimes for the fetch
+// times); we keep them as strings because APIClient's decoder has no custom
+// date strategy. `DataFreshness.priceDisplay` formats them for the header.
+struct DataFreshness: Codable, Sendable, Equatable {
+    var priceAsOf: String?
+    var priceFetchedAt: String?
+    var newsAsOf: String?
+}
+
 struct ResearchData: Codable, Sendable, Equatable {
     var filings: [JSONValue] = []
     var news: [JSONValue] = []
+    // Optional, not defaulted: synthesized Decodable ignores property defaults
+    // for missing keys, and the partial-research SSE frame omits freshness —
+    // an Optional decodes to nil there instead of throwing keyNotFound.
+    var freshness: DataFreshness?
+}
+
+extension DataFreshness {
+    // "as of close 5/28" — derived from the newest price bar's trading day.
+    // nil when there is no price data (e.g. a degraded result), so the caller
+    // can omit the line entirely.
+    var priceDisplay: String? {
+        guard let label = Self.shortDate(fromISO: priceAsOf) else { return nil }
+        return "as of close \(label)"
+    }
+
+    // Format an ISO date/datetime string to a locale-independent "M/d" label.
+    // Parsed by hand (not DateFormatter) so the result is deterministic and
+    // free of time-zone shifting on a date-only value.
+    static func shortDate(fromISO value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        let datePart = value.prefix(10)  // tolerate a full datetime prefix
+        let parts = datePart.split(separator: "-")
+        guard parts.count == 3,
+              let month = Int(parts[1]),
+              let day = Int(parts[2]) else { return nil }
+        return "\(month)/\(day)"
+    }
 }
 
 struct AnalysisData: Codable, Sendable, Equatable {

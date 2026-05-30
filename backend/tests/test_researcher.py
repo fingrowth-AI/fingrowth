@@ -157,6 +157,35 @@ async def test_news_items_carry_provenance(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# V7-03: price source reports the original (cache-aware) fetch time
+# ---------------------------------------------------------------------------
+
+
+async def test_price_source_reports_original_fetch_time(monkeypatch):
+    """The Alpha Vantage source's retrieved_at is the cached original fetch
+    time, not the gather/serve time — so cached prices don't look fresh-now."""
+    _stub_tools(monkeypatch, prices=_prices(3))
+    original = datetime(2025, 5, 28, 20, 15, tzinfo=UTC)
+    monkeypatch.setattr(researcher, "daily_prices_fetched_at", lambda _t: original)
+
+    packet = await gather_research("q", "AAPL")
+
+    av = next(s for s in packet.sources if s.name == "Alpha Vantage")
+    assert av.retrieved_at == original
+
+
+async def test_price_source_falls_back_to_gather_time_when_uncached(monkeypatch):
+    """With nothing cached, the price source still carries a real timestamp."""
+    _stub_tools(monkeypatch, prices=_prices(3))
+    monkeypatch.setattr(researcher, "daily_prices_fetched_at", lambda _t: None)
+
+    packet = await gather_research("q", "AAPL")
+
+    av = next(s for s in packet.sources if s.name == "Alpha Vantage")
+    assert isinstance(av.retrieved_at, datetime)
+
+
+# ---------------------------------------------------------------------------
 # Acceptance: one data source failing does not crash the agent
 # ---------------------------------------------------------------------------
 

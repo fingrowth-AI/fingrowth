@@ -43,6 +43,7 @@ from app.models.schemas import (
     AnalysisData,
     AnalysisQuery,
     AnalysisResponse,
+    DataFreshness,
     ResearchData,
     RiskReview,
 )
@@ -113,6 +114,35 @@ def _partial_analysis_payload(final_state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _data_freshness(research_dict: dict[str, Any]) -> DataFreshness:
+    """Derive 'as of' timestamps for the price and news data (V7-03).
+
+    Computed from the full research packet (before wire-trimming) so it sees
+    every bar and source. ``price_as_of`` is the newest bar's trading day;
+    fetch timestamps come from the source provenance, where the price source's
+    ``retrieved_at`` is already cache-aware (set to the original fetch time by
+    the researcher).
+    """
+    price_data = research_dict.get("price_data") or []
+    sources = research_dict.get("sources") or []
+
+    # Bar dates are ISO "YYYY-MM-DD" strings in the dump; lexical max == latest.
+    bar_dates = [b.get("date") for b in price_data if b.get("date")]
+    price_as_of = max(bar_dates) if bar_dates else None
+
+    def _fetch_time(source_name: str) -> Any | None:
+        for source in sources:
+            if source.get("name") == source_name and source.get("ok"):
+                return source.get("retrieved_at")
+        return None
+
+    return DataFreshness(
+        price_as_of=price_as_of,
+        price_fetched_at=_fetch_time("Alpha Vantage"),
+        news_as_of=_fetch_time("Finnhub"),
+    )
+
+
 def _build_response(
     session_id: uuid.UUID,
     ticker: str,
@@ -131,6 +161,7 @@ def _build_response(
 
     research = ResearchData(
         **_wire_research_payload(research_dict),
+        freshness=_data_freshness(research_dict),
     )
 
     indicators = analysis_dict.get("technical_indicators") or {}

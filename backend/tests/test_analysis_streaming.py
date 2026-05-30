@@ -221,6 +221,23 @@ async def test_final_result_contains_all_required_fields(client: AsyncClient):
     assert data["disclaimer"] == STANDARD_DISCLAIMER
 
 
+@pytest.mark.asyncio
+async def test_final_result_carries_data_freshness(client: AsyncClient):
+    """V7-03: the result exposes 'as of' timestamps for price and news data,
+    with price_as_of equal to the newest price bar's trading day."""
+    _s, _ct, events = await _collect_events(
+        client, {"query": "q", "ticker": "AAPL", "analysis_type": "technical"}
+    )
+    final = next(e for e in events if e["event"] == "final_result")
+    freshness = final["data"]["research"]["freshness"]
+
+    expected_as_of = max(b["date"] for b in _price_payload(60))
+    assert freshness["price_as_of"] == expected_as_of
+    # Fetch timestamps are populated (ISO strings); news source is healthy here.
+    assert freshness["price_fetched_at"] is not None
+    assert freshness["news_as_of"] is not None
+
+
 def test_wire_research_payload_is_bounded_for_mobile_sse():
     """Large research packets should not become huge one-line SSE frames."""
     from app.routers.analysis import _wire_research_payload

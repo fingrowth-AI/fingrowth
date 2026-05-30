@@ -21,7 +21,11 @@ from typing import Any
 import httpx
 
 from app.models.research import ResearchPacket, Source
-from app.tools.market_data import ALPHA_VANTAGE_BASE, get_daily_prices
+from app.tools.market_data import (
+    ALPHA_VANTAGE_BASE,
+    daily_prices_fetched_at,
+    get_daily_prices,
+)
 from app.tools.news_sentiment import FINNHUB_BASE, get_company_news
 from app.tools.sec_edgar import WWW_BASE, get_company_filings
 
@@ -130,6 +134,13 @@ async def gather_research(
     prices, av_source = _resolve(
         prices_res, name="Alpha Vantage", url=_price_url(symbol), retrieved_at=retrieved_at
     )
+    # Price data is cached (P2-02). Report when it was *originally* fetched so a
+    # cache hit doesn't masquerade as fresh-as-of-now (V7-03). Falls back to the
+    # gather timestamp when nothing is cached (e.g. stubbed tools under test).
+    if av_source.ok:
+        fetched_at = daily_prices_fetched_at(symbol)
+        if fetched_at is not None:
+            av_source = av_source.model_copy(update={"retrieved_at": fetched_at})
     news, fh_source = _resolve(
         news_res, name="Finnhub", url=_news_url(symbol), retrieved_at=retrieved_at
     )
