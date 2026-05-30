@@ -1243,15 +1243,9 @@ private struct LinkedAnalysisSheet: View {
         if !entry.indicators.isEmpty {
             Divider()
             Text("Technical indicators").font(.headline)
-            ForEach(entry.indicators.keys.sorted(), id: \.self) { key in
-                HStack {
-                    Text(key.uppercased()).font(.subheadline.weight(.medium))
-                    Spacer()
-                    Text(stringValue(entry.indicators[key]))
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
+            // V7-01: shared renderer unpacks nested MACD/Bollinger objects so
+            // a linked analysis never shows a raw "{…}" placeholder.
+            IndicatorRowsView(indicators: entry.indicators)
         }
         Text(entry.disclaimer)
             .font(.caption2)
@@ -1283,19 +1277,6 @@ private struct LinkedAnalysisSheet: View {
         qty.truncatingRemainder(dividingBy: 1) == 0
             ? String(Int(qty))
             : String(format: "%.2f", qty)
-    }
-
-    private func stringValue(_ value: JSONValue?) -> String {
-        guard let value else { return "—" }
-        switch value {
-        case .null: return "—"
-        case .bool(let b): return b ? "true" : "false"
-        case .int(let i): return String(i)
-        case .double(let d): return String(format: "%.2f", d)
-        case .string(let s): return s
-        case .array(let arr): return "[\(arr.count) values]"
-        case .object: return "{…}"
-        }
     }
 }
 

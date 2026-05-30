@@ -782,39 +782,10 @@ private func statusPill(_ title: String, systemImage: String, color: Color) -> s
 private struct TechnicalIndicatorsView: View {
     let indicators: [String: JSONValue]
 
+    // V7-01: rendering lives in the shared IndicatorRowsView so every surface
+    // unpacks nested MACD/Bollinger objects identically.
     var body: some View {
-        if indicators.isEmpty {
-            Text("No indicator data returned.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(indicators.keys.sorted(), id: \.self) { key in
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(key.uppercased())
-                            .font(.subheadline.weight(.medium))
-                        Spacer()
-                        Text(format(indicators[key]))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-    }
-
-    private func format(_ value: JSONValue?) -> String {
-        guard let value else { return "—" }
-        switch value {
-        case .null: return "—"
-        case .bool(let b): return b ? "true" : "false"
-        case .int(let i): return String(i)
-        case .double(let d):
-            return String(format: "%.2f", d)
-        case .string(let s): return s
-        case .array(let arr): return "[\(arr.count) values]"
-        case .object: return "{…}"
-        }
+        IndicatorRowsView(indicators: indicators)
     }
 }
 
