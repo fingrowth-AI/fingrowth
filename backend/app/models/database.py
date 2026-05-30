@@ -8,9 +8,38 @@ from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+# V7-04: the system is single-user today but the schema is multi-user-ready.
+# Every per-user row carries a user_id; until Sign in with Apple lands (V8),
+# everything is attributed to this fixed default user. A stable, well-known
+# UUID lets the migration seed the row and the app reference it without a
+# lookup. V8 fills user_id with the real authenticated user — a fill, not a
+# migration.
+DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
 
 class Base(DeclarativeBase):
     pass
+
+
+class User(Base):
+    """An application user.
+
+    ``apple_sub`` is the stable subject identifier from Sign in with Apple. It
+    is nullable for now (the default user has none) and is populated in V8 when
+    real authentication is wired up.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    apple_sub: Mapped[str | None] = mapped_column(
+        String(255), unique=True, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class AnalysisSession(Base):
@@ -24,6 +53,14 @@ class AnalysisSession(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        default=DEFAULT_USER_ID,
+        server_default=str(DEFAULT_USER_ID),
+        index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -53,6 +90,14 @@ class AnalysisResult(Base):
         UUID(as_uuid=True),
         ForeignKey("analysis_sessions.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        default=DEFAULT_USER_ID,
+        server_default=str(DEFAULT_USER_ID),
+        index=True,
     )
     research_data: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict
@@ -90,6 +135,14 @@ class VectorEmbedding(Base):
         UUID(as_uuid=True),
         ForeignKey("analysis_results.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        default=DEFAULT_USER_ID,
+        server_default=str(DEFAULT_USER_ID),
+        index=True,
     )
     # sentence-transformers all-MiniLM-L6-v2 outputs 384 dims
     embedding: Mapped[list] = mapped_column(Vector(384), nullable=False)

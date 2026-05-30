@@ -15,7 +15,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.models.database import AnalysisResult, AnalysisSession, Base, VectorEmbedding
+from app.models.database import (
+    DEFAULT_USER_ID,
+    AnalysisResult,
+    AnalysisSession,
+    Base,
+    User,
+    VectorEmbedding,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,24 +52,51 @@ def test_model_tablenames():
     assert AnalysisSession.__tablename__ == "analysis_sessions"
     assert AnalysisResult.__tablename__ == "analysis_results"
     assert VectorEmbedding.__tablename__ == "vector_embeddings"
+    assert User.__tablename__ == "users"
+
+
+def test_users_table_columns():
+    """V7-04: users has id, apple_sub (nullable), created_at."""
+    cols = {c.name: c for c in User.__table__.columns}
+    assert {"id", "apple_sub", "created_at"} <= set(cols)
+    assert cols["apple_sub"].nullable is True
 
 
 def test_model_columns():
     session_cols = {c.name for c in AnalysisSession.__table__.columns}
     expected_session = {
-        "id", "created_at", "query_hash", "ticker", "analysis_type", "portfolio_context",
+        "id", "user_id", "created_at", "query_hash", "ticker",
+        "analysis_type", "portfolio_context",
     }
     assert expected_session <= session_cols
 
     result_cols = {c.name for c in AnalysisResult.__table__.columns}
     expected_result = {
-        "id", "session_id", "research_data", "technical_indicators",
+        "id", "user_id", "session_id", "research_data", "technical_indicators",
         "narrative", "risk_flags", "confidence",
     }
     assert expected_result <= result_cols
 
     emb_cols = {c.name for c in VectorEmbedding.__table__.columns}
-    assert {"id", "result_id", "embedding", "content_summary"} <= emb_cols
+    assert {"id", "user_id", "result_id", "embedding", "content_summary"} <= emb_cols
+
+
+def test_user_id_present_on_every_per_user_table():
+    """V7-04: every per-user table carries a user_id FK to users."""
+    for model in (AnalysisSession, AnalysisResult, VectorEmbedding):
+        user_fks = {
+            fk.target_fullname
+            for col in model.__table__.columns
+            if col.name == "user_id"
+            for fk in col.foreign_keys
+        }
+        assert any("users.id" in fk for fk in user_fks), (
+            f"{model.__tablename__}.user_id must reference users.id"
+        )
+
+
+def test_default_user_id_is_stable():
+    assert str(DEFAULT_USER_ID) == "00000000-0000-0000-0000-000000000001"
 
 
 def test_foreign_keys():
@@ -91,10 +125,20 @@ async def db_session():
 
     engine = _make_engine()
 
-    # Ensure pgvector extension exists and tables are present
+    # Rebuild the schema from the current models so it always matches (V7-04
+    # added user_id columns; create_all alone won't alter pre-existing tables).
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+        # Seed the default user so user_id foreign keys resolve (V7-04).
+        await conn.execute(
+            text(
+                "INSERT INTO users (id, apple_sub) VALUES (:id, NULL) "
+                "ON CONFLICT (id) DO NOTHING"
+            ),
+            {"id": str(DEFAULT_USER_ID)},
+        )
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 

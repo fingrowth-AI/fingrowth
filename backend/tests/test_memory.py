@@ -23,7 +23,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.models.database import AnalysisResult, AnalysisSession, Base, VectorEmbedding
+from app.models.database import (
+    DEFAULT_USER_ID,
+    AnalysisResult,
+    AnalysisSession,
+    Base,
+    User,
+    VectorEmbedding,
+)
 from app.services.memory import EMBEDDING_DIM, ConversationMemory
 
 
@@ -114,8 +121,18 @@ async def memory_env():
     engine = create_async_engine(settings.database_url)
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        # Rebuild from current models so the schema includes user_id (V7-04);
+        # create_all won't alter pre-existing tables.
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(text(_TRUNCATE))
+        # Seed the default user so user_id foreign keys resolve (V7-04).
+        await conn.execute(
+            text(
+                "INSERT INTO users (id, apple_sub) VALUES (:id, NULL) "
+                "ON CONFLICT (id) DO NOTHING"
+            ),
+            {"id": str(DEFAULT_USER_ID)},
+        )
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     memory = ConversationMemory(session_factory, embedder=FakeEmbedder())
@@ -127,12 +144,18 @@ async def memory_env():
         await engine.dispose()
 
 
-async def _new_session(session_factory, ticker: str = "AAPL", created_at: datetime | None = None):
+async def _new_session(
+    session_factory,
+    ticker: str = "AAPL",
+    created_at: datetime | None = None,
+    user_id: uuid.UUID = DEFAULT_USER_ID,
+):
     sid = uuid.uuid4()
     async with session_factory() as session:
         async with session.begin():
             row = AnalysisSession(
                 id=sid,
+                user_id=user_id,
                 query_hash="0" * 64,
                 ticker=ticker,
                 analysis_type="general",
@@ -221,3 +244,80 @@ async def test_prune_old_removes_entries_past_90_days(memory_env):
     survivors = {r.session_id for r in await memory.find_similar("analysis", top_k=10)}
     assert sid_old not in survivors
     assert sid_recent in survivors
+
+
+@pytest.mark.asyncio
+async def test_recall_is_scoped_to_user(memory_env):
+    """V7-04: find_similar only returns the requesting user's analyses."""
+    memory, sf = memory_env
+
+    other_user = uuid.uuid4()
+    async with sf() as session:
+        async with session.begin():
+            session.add(User(id=other_user, apple_sub="other.apple.sub"))
+
+    content = "shared phrasing about semiconductor demand"
+
+    # Default user's analysis — session and result share the default owner.
+    sid_default = await _new_session(sf, "NVDA")
+    await memory.store_analysis(sid_default, {"narrative": content}, content=content)
+
+    # Another user's analysis with the same text (so similarity can't separate
+    # them — only the user scope can). The session is owned by other_user, so
+    # the whole chain is coherently attributed.
+    sid_other = await _new_session(sf, "AMD", user_id=other_user)
+    await memory.store_analysis(
+        sid_other, {"narrative": content}, content=content, user_id=other_user
+    )
+
+    default_hits = {r.session_id for r in await memory.find_similar(content, top_k=10)}
+    assert sid_default in default_hits
+    assert sid_other not in default_hits  # never leaks across users
+
+    other_hits = {
+        r.session_id
+        for r in await memory.find_similar(content, top_k=10, user_id=other_user)
+    }
+    assert sid_other in other_hits
+    assert sid_default not in other_hits
+
+
+@pytest.mark.asyncio
+async def test_store_analysis_rejects_ownership_mismatch(memory_env):
+    """V7-04: the session is the ownership authority — a result cannot be
+    attributed to a different user than the session it belongs to."""
+    memory, sf = memory_env
+
+    other_user = uuid.uuid4()
+    async with sf() as session:
+        async with session.begin():
+            session.add(User(id=other_user, apple_sub="mismatch.sub"))
+
+    # Session owned by the default user.
+    sid = await _new_session(sf, "INTC")
+
+    with pytest.raises(ValueError, match="does not own session"):
+        await memory.store_analysis(
+            sid, {"narrative": "x"}, content="x", user_id=other_user
+        )
+
+
+@pytest.mark.asyncio
+async def test_store_analysis_inherits_session_owner(memory_env):
+    """When no user_id is asserted, ownership is inherited from the session so
+    the result/embedding chain stays coherent (V7-04)."""
+    memory, sf = memory_env
+
+    other_user = uuid.uuid4()
+    async with sf() as session:
+        async with session.begin():
+            session.add(User(id=other_user, apple_sub="inherit.sub"))
+
+    sid = await _new_session(sf, "TSM", user_id=other_user)
+    # No user_id passed — inherits other_user from the session.
+    await memory.store_analysis(sid, {"narrative": "fab capacity"}, content="fab capacity")
+
+    # Recalled only under the session's owner, never the default user.
+    owner_hits = await memory.find_similar("fab capacity", user_id=other_user)
+    assert {r.session_id for r in owner_hits} == {sid}
+    assert await memory.find_similar("fab capacity") == []

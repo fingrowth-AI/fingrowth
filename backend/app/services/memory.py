@@ -24,7 +24,12 @@ from typing import Any, Protocol, runtime_checkable
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.database import AnalysisResult, VectorEmbedding
+from app.models.database import (
+    DEFAULT_USER_ID,
+    AnalysisResult,
+    AnalysisSession,
+    VectorEmbedding,
+)
 
 # all-MiniLM-L6-v2 emits 384-dim vectors — must match VectorEmbedding.embedding.
 EMBEDDING_DIM = 384
@@ -102,13 +107,20 @@ class ConversationMemory:
         result: Mapping[str, Any] | AnalysisResult,
         *,
         content: str | None = None,
+        user_id: uuid.UUID | None = None,
     ) -> uuid.UUID:
         """Persist `result` for `session_id` and index it for recall.
 
         Creates the AnalysisResult row (linked to an existing AnalysisSession),
         embeds `content` (defaults to the result narrative — the text future
-        queries are matched against), and stores the vector. Returns the new
-        embedding id.
+        queries are matched against), and stores the vector.
+
+        Ownership (V7-04) is inherited from the owning AnalysisSession, which is
+        the single source of truth: the result and embedding are attributed to
+        the same user as the session, so a row chain can never end up split
+        across users. If `user_id` is supplied it is treated as an assertion and
+        must match the session's owner — a mismatch raises rather than silently
+        writing an incoherent chain. Returns the new embedding id.
         """
         text_content = (content if content is not None else self._content_for(result)).strip()
         if not text_content:
@@ -119,12 +131,16 @@ class ConversationMemory:
 
         async with self._session_factory() as session:
             async with session.begin():
+                owner = await self._resolve_owner(session, session_id, user_id)
+
                 result_row = self._as_result_row(session_id, result)
+                result_row.user_id = owner
                 session.add(result_row)
                 await session.flush()  # assign result_row.id
 
                 embedding = VectorEmbedding(
                     result_id=result_row.id,
+                    user_id=owner,
                     embedding=vector,
                     content_summary=text_content[:_CONTENT_SUMMARY_MAX],
                 )
@@ -132,9 +148,42 @@ class ConversationMemory:
                 await session.flush()
                 return embedding.id
 
-    async def find_similar(self, query: str, top_k: int = 5) -> list[PastAnalysis]:
+    @staticmethod
+    async def _resolve_owner(
+        session: AsyncSession,
+        session_id: uuid.UUID,
+        claimed_user_id: uuid.UUID | None,
+    ) -> uuid.UUID:
+        """Return the AnalysisSession's owner, enforcing it as the authority.
+
+        Raises ``ValueError`` if the session is missing, or if a caller-supplied
+        ``user_id`` contradicts the session's owner (an ownership-mismatch guard
+        that keeps the session/result/embedding chain coherent).
+        """
+        session_row = await session.get(AnalysisSession, session_id)
+        if session_row is None:
+            raise ValueError(f"AnalysisSession {session_id} does not exist")
+        owner = session_row.user_id
+        if claimed_user_id is not None and claimed_user_id != owner:
+            raise ValueError(
+                f"user_id {claimed_user_id} does not own session {session_id} "
+                f"(owned by {owner})"
+            )
+        return owner
+
+    async def find_similar(
+        self,
+        query: str,
+        top_k: int = 5,
+        *,
+        user_id: uuid.UUID = DEFAULT_USER_ID,
+    ) -> list[PastAnalysis]:
         """Return up to `top_k` past analyses most similar to `query`, ordered
-        by descending cosine similarity (most relevant first)."""
+        by descending cosine similarity (most relevant first).
+
+        Recall is scoped to `user_id` (V7-04) so one user never sees another's
+        analyses; until V8 this is the default user.
+        """
         if top_k <= 0:
             return []
         query_vector = await asyncio.to_thread(self._encode, query)
@@ -145,6 +194,7 @@ class ConversationMemory:
         stmt = (
             select(AnalysisResult, VectorEmbedding.content_summary, distance)
             .join(AnalysisResult, VectorEmbedding.result_id == AnalysisResult.id)
+            .where(AnalysisResult.user_id == user_id)
             .order_by(distance)
             .limit(top_k)
         )
