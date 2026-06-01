@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -15,6 +16,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 # lookup. V8 fills user_id with the real authenticated user — a fill, not a
 # migration.
 DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+# V8-03: every user starts with this much tracked virtual cash. Kept in lockstep
+# with the 0003 migration's server_default and with
+# app.tools.paper_trading.SEED_EQUITY (the equity-curve seed) — they are the
+# same starting capital viewed two ways (cash on hand vs. account equity).
+SEED_VIRTUAL_CASH = Decimal("100000.00")
 
 
 class Base(DeclarativeBase):
@@ -153,4 +160,32 @@ class VectorEmbedding(Base):
 
     result: Mapped[AnalysisResult] = relationship(
         "AnalysisResult", back_populates="embeddings"
+    )
+
+
+class VirtualBalance(Base):
+    """Per-user virtual cash, the heart of V8-03.
+
+    The shared Alpaca paper account holds one $100K buying-power pool that every
+    user would otherwise drain in common. Instead, per-user accounting lives
+    here: each user gets their own row seeded at :data:`SEED_VIRTUAL_CASH`, and
+    Alpaca is demoted to a pure execution venue. ``starting_cash`` is the seed
+    capital; *available* cash is derived by replaying the user's filled orders
+    against it (see ``app.tools.paper_trading.reconstruct_cash``), so it always
+    reconciles with their reconstructed positions rather than drifting from a
+    separately-mutated counter.
+    """
+
+    __tablename__ = "virtual_balances"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    starting_cash: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, server_default="100000.00"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

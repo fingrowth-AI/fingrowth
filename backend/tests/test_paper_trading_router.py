@@ -23,6 +23,7 @@ from app.models.database import DEFAULT_USER_ID
 from app.models.market import PriceBar
 from app.models.trading import Order, PortfolioHistory, PortfolioHistoryPoint, Position
 from app.routers import paper_trading as router_module
+from app.services.virtual_balance import Balance
 from app.tools.paper_trading import LiveEndpointError, MissingCredentialsError
 
 BASE = "http://test"
@@ -32,6 +33,36 @@ BASE = "http://test"
 async def client():
     async with AsyncClient(transport=ASGITransport(app=app), base_url=BASE) as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def _ample_buying_power(monkeypatch):
+    """Default the V8-03 buy guard to 'plenty of cash' so the existing place-order
+    tests exercise submission, not balance math. Tests that care about the guard
+    override these two seams explicitly.
+
+    Patched on the router module (where the names are bound) rather than the
+    service, matching how the other callables here are stubbed.
+    """
+
+    async def _bp(session, user_id, *args, **kwargs):
+        return 1_000_000.0
+
+    async def _price(ticker, days=1, **kwargs):
+        return [
+            PriceBar(
+                ticker=ticker.upper(),
+                date=date(2024, 1, 15),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000,
+            )
+        ]
+
+    monkeypatch.setattr(router_module, "available_buying_power", _bp)
+    monkeypatch.setattr(router_module, "get_daily_prices", _price)
 
 
 def _order(**overrides) -> Order:
@@ -166,6 +197,235 @@ async def test_place_order_upstream_http_error_returns_502(
     )
     assert resp.status_code == 502
     assert "403" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# V8-03: buying-power validation before Alpaca
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_buy_exceeding_balance_rejected_before_alpaca(
+    monkeypatch, client: AsyncClient
+):
+    """Acceptance: an order exceeding the user's balance is rejected (402) and
+    never reaches Alpaca."""
+
+    async def _broke(session, user_id, *args, **kwargs):
+        return 500.0  # only $500 available
+
+    monkeypatch.setattr(router_module, "available_buying_power", _broke)
+
+    reached_alpaca = False
+
+    async def fake_place(*args, **kwargs):
+        nonlocal reached_alpaca
+        reached_alpaca = True
+        return _order()
+
+    monkeypatch.setattr(router_module, "place_paper_order", fake_place)
+
+    # 10 shares * $100 reference price = $1000 > $500 available.
+    resp = await client.post(
+        "/api/v1/paper/order",
+        json={"ticker": "AAPL", "quantity": 10, "side": "buy"},
+    )
+
+    assert resp.status_code == 402
+    assert "buying power" in resp.json()["detail"].lower()
+    assert reached_alpaca is False  # rejected before submission
+
+
+@pytest.mark.asyncio
+async def test_affordable_buy_passes_guard_and_submits(monkeypatch, client: AsyncClient):
+    async def _some_cash(session, user_id, *args, **kwargs):
+        return 1500.0  # enough for 10 * $100
+
+    monkeypatch.setattr(router_module, "available_buying_power", _some_cash)
+
+    submitted = {}
+
+    async def fake_place(*args, **kwargs):
+        submitted["hit"] = True
+        return _order()
+
+    monkeypatch.setattr(router_module, "place_paper_order", fake_place)
+
+    resp = await client.post(
+        "/api/v1/paper/order",
+        json={"ticker": "AAPL", "quantity": 10, "side": "buy"},
+    )
+
+    assert resp.status_code == 200
+    assert submitted.get("hit") is True
+
+
+@pytest.mark.asyncio
+async def test_sell_within_long_is_allowed_and_not_balance_gated(
+    monkeypatch, client: AsyncClient
+):
+    """A sell that closes part of a long is allowed and must never consult the
+    buying-power guard (selling frees cash, it doesn't consume it)."""
+
+    async def _broke(session, user_id, *args, **kwargs):
+        raise AssertionError("sell path must not check buying power")
+
+    monkeypatch.setattr(router_module, "available_buying_power", _broke)
+
+    async def fake_positions(user_id):
+        return [_position("AAPL", 25.0)]  # holds 25 long
+
+    monkeypatch.setattr(router_module, "get_user_positions", fake_positions)
+
+    async def fake_place(*args, **kwargs):
+        return _order(side="sell")
+
+    monkeypatch.setattr(router_module, "place_paper_order", fake_place)
+
+    resp = await client.post(
+        "/api/v1/paper/order",
+        json={"ticker": "AAPL", "quantity": 10, "side": "sell"},  # 10 <= 25
+    )
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_sell_exceeding_long_is_rejected_as_short(monkeypatch, client: AsyncClient):
+    """Acceptance hardening (P1): a sell beyond the held long would open a short
+    and mint virtual cash — refuse it (409) before Alpaca."""
+
+    async def fake_positions(user_id):
+        return [_position("AAPL", 5.0)]  # only 5 held long
+
+    monkeypatch.setattr(router_module, "get_user_positions", fake_positions)
+
+    reached_alpaca = False
+
+    async def fake_place(*args, **kwargs):
+        nonlocal reached_alpaca
+        reached_alpaca = True
+        return _order(side="sell")
+
+    monkeypatch.setattr(router_module, "place_paper_order", fake_place)
+
+    resp = await client.post(
+        "/api/v1/paper/order",
+        json={"ticker": "AAPL", "quantity": 10, "side": "sell"},  # 10 > 5
+    )
+
+    assert resp.status_code == 409
+    assert "short" in resp.json()["detail"].lower()
+    assert reached_alpaca is False
+
+
+@pytest.mark.asyncio
+async def test_naked_short_with_no_position_is_rejected(monkeypatch, client: AsyncClient):
+    async def fake_positions(user_id):
+        return []  # holds nothing
+
+    monkeypatch.setattr(router_module, "get_user_positions", fake_positions)
+
+    async def fake_place(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("must not submit a naked short")
+
+    monkeypatch.setattr(router_module, "place_paper_order", fake_place)
+
+    resp = await client.post(
+        "/api/v1/paper/order",
+        json={"ticker": "TSLA", "quantity": 1, "side": "sell"},
+    )
+
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_buy_fails_closed_on_market_data_transport_error(
+    monkeypatch, client: AsyncClient
+):
+    """A raw transport failure while pricing must become a clean 503, not a 500,
+    and must not reach Alpaca."""
+
+    async def _boom(ticker, days=1, **kwargs):
+        raise httpx.ConnectError("dns boom")
+
+    monkeypatch.setattr(router_module, "get_daily_prices", _boom)
+
+    async def fake_place(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("must not submit when pricing failed")
+
+    monkeypatch.setattr(router_module, "place_paper_order", fake_place)
+
+    resp = await client.post(
+        "/api/v1/paper/order",
+        json={"ticker": "AAPL", "quantity": 1, "side": "buy"},
+    )
+
+    assert resp.status_code == 503
+    assert "unreachable" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_buy_maps_market_data_http_error_to_502(monkeypatch, client: AsyncClient):
+    async def _bad_status(ticker, days=1, **kwargs):
+        request = httpx.Request("GET", "https://www.alphavantage.co/query")
+        response = httpx.Response(503, request=request)
+        raise httpx.HTTPStatusError("upstream", request=request, response=response)
+
+    monkeypatch.setattr(router_module, "get_daily_prices", _bad_status)
+
+    resp = await client.post(
+        "/api/v1/paper/order",
+        json={"ticker": "AAPL", "quantity": 1, "side": "buy"},
+    )
+
+    assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_buy_rejected_when_price_unavailable(monkeypatch, client: AsyncClient):
+    """If we can't price the order we can't validate buying power, so the buy is
+    refused rather than silently bypassing the check."""
+
+    async def _no_price(ticker, days=1, **kwargs):
+        return []
+
+    monkeypatch.setattr(router_module, "get_daily_prices", _no_price)
+
+    async def fake_place(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("must not submit when price is unavailable")
+
+    monkeypatch.setattr(router_module, "place_paper_order", fake_place)
+
+    resp = await client.post(
+        "/api/v1/paper/order",
+        json={"ticker": "AAPL", "quantity": 1, "side": "buy"},
+    )
+
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# GET /paper/balance (V8-03)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_balance_returns_tracked_cash(monkeypatch, client: AsyncClient):
+    captured: dict = {}
+
+    async def fake_balance(session, user_id, *args, **kwargs):
+        captured["user_id"] = user_id
+        return Balance(starting_cash=100000.0, cash=98750.0)
+
+    monkeypatch.setattr(router_module, "get_balance", fake_balance)
+
+    resp = await client.get("/api/v1/paper/balance")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"starting_cash": 100000.0, "cash": 98750.0}
+    # Balance is scoped to the resolved user (default user here).
+    assert captured["user_id"] == DEFAULT_USER_ID
 
 
 # ---------------------------------------------------------------------------

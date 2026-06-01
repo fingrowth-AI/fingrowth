@@ -26,15 +26,19 @@ import logging
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser
+from app.db import get_session
 from app.models.trading import Order, PortfolioHistory, Position
+from app.services.virtual_balance import available_buying_power, get_balance
 from app.tools.market_data import (
     MarketDataError,
     MissingAPIKeyError,
     RateLimitError,
+    StalePriceDataError,
     get_daily_prices,
 )
 from app.tools.paper_trading import (
@@ -85,9 +89,84 @@ class OrdersResponse(BaseModel):
     orders: list[Order]
 
 
+class BalanceResponse(BaseModel):
+    """GET /paper/balance — the user's tracked virtual cash (V8-03)."""
+
+    starting_cash: float
+    cash: float
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+async def _reference_price(ticker: str) -> float:
+    """Latest daily close for ``ticker``, used to value a market buy up front.
+
+    Market orders have no fill price at submit time, so buying-power validation
+    needs a price estimate. The most-recent close is the server's source of
+    truth (already cached, and the same series the Performance chart uses).
+    Market-data failures are mapped to a clear HTTP status rather than silently
+    skipping the balance check — V8-03 validates *before* reaching Alpaca.
+    """
+    try:
+        bars = await get_daily_prices(ticker, days=1)
+    except MissingAPIKeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot validate buying power: market-data API key is not configured.",
+        ) from exc
+    except RateLimitError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Cannot validate buying power right now: market data is rate-limited.",
+        ) from exc
+    except StalePriceDataError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot validate buying power: price data is stale ({exc}).",
+        ) from exc
+    except MarketDataError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Cannot validate buying power: {exc}"
+        ) from exc
+    except httpx.HTTPStatusError as exc:
+        # raise_for_status() inside the market-data client (e.g. AV 5xx).
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Cannot validate buying power: market data provider returned "
+                f"HTTP {exc.response.status_code}."
+            ),
+        ) from exc
+    except httpx.RequestError as exc:
+        # Transport failure (DNS/connect/timeout). Fail closed — we never skip
+        # the balance check just because pricing was unreachable.
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot validate buying power: market data is unreachable.",
+        ) from exc
+    if not bars:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot validate buying power: no price available for {ticker.upper()}.",
+        )
+    return bars[0].close
+
+
+async def _user_long_quantity(user_id: str, ticker: str) -> float:
+    """Shares of ``ticker`` the user currently holds long (0 if none).
+
+    Reconstructed from the user's own filled orders (V8-02), so it never sees
+    another user's position in the shared account.
+    """
+    positions = await get_user_positions(user_id)
+    symbol = ticker.upper()
+    for p in positions:
+        if p.symbol == symbol and p.side == "long":
+            return p.qty
+    return 0.0
 
 
 def _map_client_error(exc: Exception) -> HTTPException:
@@ -110,6 +189,12 @@ def _map_client_error(exc: Exception) -> HTTPException:
             status_code=502,
             detail=f"Alpaca rejected the request (HTTP {exc.response.status_code}).",
         )
+    if isinstance(exc, httpx.RequestError):
+        # Transport failure reaching Alpaca (DNS/connect/timeout) — distinct from
+        # a 5xx it returned. Surface as unavailable rather than an opaque 500.
+        return HTTPException(
+            status_code=503, detail="Alpaca is unreachable; try again shortly."
+        )
     if isinstance(exc, ValueError):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=500, detail="paper trading client failed")
@@ -121,12 +206,26 @@ def _map_client_error(exc: Exception) -> HTTPException:
 
 
 @router.post("/order", response_model=Order)
-async def place_order(body: PlaceOrderRequest, current_user: CurrentUser) -> Order:
+async def place_order(
+    body: PlaceOrderRequest,
+    current_user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> Order:
     """Submit a paper order. Returns the created Order (typically ``accepted``).
 
     Validation that's cheap to do client-side (``side`` enum, positive
     quantity) happens in Pydantic; the request never hits Alpaca if the body
     is invalid.
+
+    V8-03: a buy is validated against the user's tracked virtual buying power
+    *before* it reaches Alpaca. An order that would cost more than the user's
+    available cash is rejected with 402, so one user can never drain the shared
+    account's pool.
+
+    A sell may not exceed the long quantity the user currently holds: short
+    selling is refused (409). Without that guard a naked short would credit
+    virtual cash (sells add to the reconstructed balance), letting a user mint
+    buying power out of nothing and bypass the buy check above.
     """
     if body.side not in ALLOWED_SIDES:
         # Defensive: Literal[...] already enforces this, but we keep the
@@ -135,6 +234,43 @@ async def place_order(body: PlaceOrderRequest, current_user: CurrentUser) -> Ord
             status_code=400,
             detail=f"side must be one of {sorted(ALLOWED_SIDES)}",
         )
+
+    if body.side == "buy":
+        price = await _reference_price(body.ticker)
+        estimated_cost = body.quantity * price
+        try:
+            available = await available_buying_power(session, current_user)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("available_buying_power failed")
+            raise _map_client_error(exc) from exc
+        if estimated_cost > available:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Insufficient virtual buying power: {body.ticker.upper()} "
+                    f"order needs about ${estimated_cost:,.2f} but only "
+                    f"${available:,.2f} is available."
+                ),
+            )
+    else:  # sell
+        try:
+            held_long = await _user_long_quantity(current_user, body.ticker)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("get_user_positions failed during sell validation")
+            raise _map_client_error(exc) from exc
+        if body.quantity > held_long:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot sell {body.quantity} {body.ticker.upper()}: only "
+                    f"{held_long} held long. Short selling is not supported."
+                ),
+            )
+
     try:
         # V8-02: tag the order with the current user so it can be attributed
         # back to them in the shared Alpaca account.
@@ -180,6 +316,27 @@ async def list_orders(
     except Exception as exc:
         logger.exception("get_user_order_history failed")
         raise _map_client_error(exc) from exc
+
+
+@router.get("/balance", response_model=BalanceResponse)
+async def balance(
+    current_user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> BalanceResponse:
+    """The current user's tracked virtual cash (V8-03).
+
+    ``starting_cash`` is the seed capital ($100K); ``cash`` is what remains
+    after replaying the user's own filled orders against it — never the shared
+    Alpaca account's pooled buying power.
+    """
+    try:
+        bal = await get_balance(session, current_user)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("get_balance failed")
+        raise _map_client_error(exc) from exc
+    return BalanceResponse(starting_cash=bal.starting_cash, cash=bal.cash)
 
 
 @router.get("/portfolio-history", response_model=PortfolioHistory)

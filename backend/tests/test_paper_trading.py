@@ -29,8 +29,10 @@ from app.tools.paper_trading import (
     make_client_order_id,
     order_belongs_to_user,
     place_paper_order,
+    reconstruct_cash,
     reconstruct_portfolio_history,
     reconstruct_positions,
+    reconstruct_realized_pnl,
 )
 
 USER_A = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -710,6 +712,54 @@ async def test_get_user_portfolio_history_is_per_user():
 
     # A's realized gain is $100, not the $10,000 from B's trades.
     assert history.points[-1].equity == pytest.approx(SEED_EQUITY + 100.0)
+
+
+# ---------------------------------------------------------------------------
+# V8-03: virtual cash reconstruction and reconciliation
+# ---------------------------------------------------------------------------
+
+
+def test_reconstruct_cash_debits_buys_and_credits_sells():
+    orders = _orders(("buy", 10, 100, 1), ("sell", 5, 130, 2))
+    # SEED - (10*100) + (5*130)
+    assert reconstruct_cash(orders, SEED_EQUITY) == pytest.approx(
+        SEED_EQUITY - 1000 + 650
+    )
+
+
+def test_reconstruct_cash_respects_custom_starting_cash():
+    orders = _orders(("buy", 1, 250, 1))
+    assert reconstruct_cash(orders, 5_000.0) == pytest.approx(5_000.0 - 250)
+
+
+def test_no_orders_leaves_full_starting_cash():
+    assert reconstruct_cash([], SEED_EQUITY) == pytest.approx(SEED_EQUITY)
+
+
+def test_cash_reconciles_with_open_positions():
+    """Acceptance: virtual balance reconciles with the reconstructed position
+    value. For longs: cash + sum(cost_basis) == starting + realized P/L."""
+    orders = _orders(("buy", 10, 100, 1), ("buy", 10, 120, 2), ("sell", 5, 130, 3))
+
+    cash = reconstruct_cash(orders, SEED_EQUITY)
+    positions = reconstruct_positions(orders)
+    realized = reconstruct_realized_pnl(orders)
+    cost_basis = sum(p.cost_basis for p in positions)
+
+    assert cash + cost_basis == pytest.approx(SEED_EQUITY + realized)
+
+
+def test_cash_reconciles_after_fully_closing_a_position():
+    """A round-trip leaves no position; realized P/L lands entirely in cash."""
+    orders = _orders(("buy", 10, 100, 1), ("sell", 10, 110, 2))
+
+    cash = reconstruct_cash(orders, SEED_EQUITY)
+    positions = reconstruct_positions(orders)
+    realized = reconstruct_realized_pnl(orders)
+
+    assert positions == []
+    assert realized == pytest.approx(100.0)
+    assert cash == pytest.approx(SEED_EQUITY + 100.0)
 
 
 # ---------------------------------------------------------------------------

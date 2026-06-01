@@ -322,15 +322,29 @@ async def get_user_order_history(
     return mine[:limit]
 
 
+async def get_user_orders(
+    user_id: uuid.UUID | str,
+    *,
+    status: str = "all",
+    client: httpx.AsyncClient | None = None,
+) -> list[Order]:
+    """All of ``user_id``'s orders from the shared account, prefix-filtered.
+
+    Unlike :func:`get_user_order_history` this applies no ``limit`` slice — it
+    returns the user's full window so position, cash, and equity reconstruction
+    see every fill.
+    """
+    orders = await _fetch_account_orders(status, client=client)
+    return [o for o in orders if order_belongs_to_user(o, user_id)]
+
+
 async def get_user_positions(
     user_id: uuid.UUID | str,
     *,
     client: httpx.AsyncClient | None = None,
 ) -> list[Position]:
     """Reconstruct ``user_id``'s open positions from their filled orders."""
-    orders = await _fetch_account_orders("all", client=client)
-    mine = [o for o in orders if order_belongs_to_user(o, user_id)]
-    return reconstruct_positions(mine)
+    return reconstruct_positions(await get_user_orders(user_id, client=client))
 
 
 async def get_user_portfolio_history(
@@ -346,9 +360,7 @@ async def get_user_portfolio_history(
     mark-to-market and benchmark windowing are the remit of V8-04; this is the
     non-leaking interim.
     """
-    orders = await _fetch_account_orders("all", client=client)
-    mine = [o for o in orders if order_belongs_to_user(o, user_id)]
-    return reconstruct_portfolio_history(mine)
+    return reconstruct_portfolio_history(await get_user_orders(user_id, client=client))
 
 
 def _apply_fill(
@@ -390,6 +402,50 @@ def _filled_chronological(orders: list[Order]) -> list[Order]:
     return filled
 
 
+def _net_fills(orders: list[Order]) -> tuple[dict[str, tuple[float, float]], float]:
+    """Replay filled orders into ``(symbol -> (signed_qty, avg_price), realized_pnl)``.
+
+    The single source of truth for average-cost accounting, shared by position,
+    cash, and equity reconstruction so they can never disagree.
+    """
+    state: dict[str, tuple[float, float]] = {}
+    realized = 0.0
+    for order in _filled_chronological(orders):
+        qty, avg = state.get(order.symbol, (0.0, 0.0))
+        new_qty, new_avg, pnl = _apply_fill(
+            qty, avg, order.side, float(order.filled_qty), float(order.filled_avg_price or 0.0)
+        )
+        state[order.symbol] = (new_qty, new_avg)
+        realized += pnl
+    return state, realized
+
+
+def reconstruct_realized_pnl(orders: list[Order]) -> float:
+    """Cumulative realized P/L across a user's filled orders (closed trades)."""
+    _state, realized = _net_fills(orders)
+    return realized
+
+
+def reconstruct_cash(orders: list[Order], starting_cash: float = SEED_EQUITY) -> float:
+    """Available virtual cash after replaying a user's fills against the seed (V8-03).
+
+    Buys debit cash by their fill notional, sells credit it. Derived from the
+    same fill log as :func:`reconstruct_positions`, so cash and positions
+    reconcile by construction: for long positions,
+    ``cash + sum(cost_basis) == starting_cash + realized_pnl``.
+
+    Note: this counts *filled* notional. Resting (unfilled) buy orders are not
+    yet reserved against cash — a refinement left to follow-up, consistent with
+    the interim reconstruction approach. Paper market orders fill effectively
+    immediately, so the window is small.
+    """
+    cash = starting_cash
+    for order in _filled_chronological(orders):
+        notional = float(order.filled_qty) * float(order.filled_avg_price or 0.0)
+        cash += -notional if order.side == "buy" else notional
+    return cash
+
+
 def reconstruct_positions(orders: list[Order]) -> list[Position]:
     """Net a user's filled orders into current open positions (average-cost).
 
@@ -397,15 +453,7 @@ def reconstruct_positions(orders: list[Order]) -> list[Position]:
     unrealized_pl) is left to V8-04; here we report the deterministic,
     order-derived figures.
     """
-    # symbol -> (signed_qty, avg_entry_price)
-    state: dict[str, tuple[float, float]] = {}
-    for order in _filled_chronological(orders):
-        qty, avg = state.get(order.symbol, (0.0, 0.0))
-        new_qty, new_avg, _realized = _apply_fill(
-            qty, avg, order.side, float(order.filled_qty), float(order.filled_avg_price or 0.0)
-        )
-        state[order.symbol] = (new_qty, new_avg)
-
+    state, _realized = _net_fills(orders)
     positions: list[Position] = []
     for symbol, (qty, avg) in sorted(state.items()):
         if abs(qty) < 1e-9:

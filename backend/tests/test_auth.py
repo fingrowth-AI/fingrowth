@@ -76,6 +76,32 @@ async def test_endpoint_accepts_bearer_header(monkeypatch, client: AsyncClient):
 
     monkeypatch.setattr(router_module, "place_paper_order", fake_place)
 
+    # V8-03 added a buy-side buying-power check that prices the order and reads
+    # the user's balance. Stub both seams so this auth-contract test stays
+    # offline (no Alpha Vantage / Alpaca / DB) and focuses on header handling.
+    async def fake_bp(session, user_id, *a, **k):
+        return 1_000_000.0
+
+    async def fake_price(ticker, days=1, **k):
+        from datetime import date
+
+        from app.models.market import PriceBar
+
+        return [
+            PriceBar(
+                ticker=ticker.upper(),
+                date=date(2024, 1, 1),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000,
+            )
+        ]
+
+    monkeypatch.setattr(router_module, "available_buying_power", fake_bp)
+    monkeypatch.setattr(router_module, "get_daily_prices", fake_price)
+
     resp = await client.post(
         "/api/v1/paper/order",
         json={"ticker": "AAPL", "quantity": 1, "side": "buy"},
