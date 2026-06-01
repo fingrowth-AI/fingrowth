@@ -41,9 +41,9 @@ from app.tools.paper_trading import (
     ALLOWED_SIDES,
     LiveEndpointError,
     MissingCredentialsError,
-    get_order_history,
-    get_portfolio_history,
-    get_positions,
+    get_user_order_history,
+    get_user_portfolio_history,
+    get_user_positions,
     place_paper_order,
 )
 
@@ -136,12 +136,15 @@ async def place_order(body: PlaceOrderRequest, current_user: CurrentUser) -> Ord
             detail=f"side must be one of {sorted(ALLOWED_SIDES)}",
         )
     try:
+        # V8-02: tag the order with the current user so it can be attributed
+        # back to them in the shared Alpaca account.
         return await place_paper_order(
             body.ticker,
             body.quantity,
             body.side,
             order_type=body.order_type,
             time_in_force=body.time_in_force,
+            user_id=current_user,
         )
     except HTTPException:
         raise
@@ -152,11 +155,15 @@ async def place_order(body: PlaceOrderRequest, current_user: CurrentUser) -> Ord
 
 @router.get("/positions", response_model=PositionsResponse)
 async def list_positions(current_user: CurrentUser) -> PositionsResponse:
-    """Return the current paper positions, empty list if none."""
+    """Return the current user's paper positions, empty list if none.
+
+    Reconstructed from the user's own orders (V8-02) — never the shared
+    account's aggregate positions, which would mix users together.
+    """
     try:
-        return PositionsResponse(positions=await get_positions())
+        return PositionsResponse(positions=await get_user_positions(current_user))
     except Exception as exc:
-        logger.exception("get_positions failed")
+        logger.exception("get_user_positions failed")
         raise _map_client_error(exc) from exc
 
 
@@ -164,13 +171,14 @@ async def list_positions(current_user: CurrentUser) -> PositionsResponse:
 async def list_orders(
     current_user: CurrentUser, limit: int = 50, status: str = "all"
 ) -> OrdersResponse:
-    """Return paper order history. ``status`` filters by Alpaca's vocabulary."""
+    """Return the current user's paper order history (V8-02 partitioned)."""
     if limit <= 0:
         raise HTTPException(status_code=400, detail="limit must be > 0")
     try:
-        return OrdersResponse(orders=await get_order_history(limit=limit, status=status))
+        orders = await get_user_order_history(current_user, limit=limit, status=status)
+        return OrdersResponse(orders=orders)
     except Exception as exc:
-        logger.exception("get_order_history failed")
+        logger.exception("get_user_order_history failed")
         raise _map_client_error(exc) from exc
 
 
@@ -178,16 +186,17 @@ async def list_orders(
 async def portfolio_history(
     current_user: CurrentUser, period: str = "1M", timeframe: str = "1D"
 ) -> PortfolioHistory:
-    """Account equity over time for the Performance tracker.
+    """The current user's equity curve for the Performance tracker.
 
-    Server-backfilled by Alpaca, so the curve covers the full window — not
-    just the days the app happened to refresh — and includes realised P/L
-    from closed positions. Invalid period/timeframe values surface as 400.
+    Reconstructed from the user's own trades (V8-02) — never Alpaca's
+    account-level history, which would fold in every other user's paper trades.
+    ``period`` / ``timeframe`` are accepted for API compatibility; per-user
+    windowing and open-position mark-to-market are completed in V8-04.
     """
     try:
-        return await get_portfolio_history(period=period, timeframe=timeframe)
+        return await get_user_portfolio_history(current_user)
     except Exception as exc:
-        logger.exception("get_portfolio_history failed")
+        logger.exception("get_user_portfolio_history failed")
         raise _map_client_error(exc) from exc
 
 

@@ -12,6 +12,7 @@ orders, OCO/OTO, and trailing-stop variants are left to a follow-up.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -32,6 +33,38 @@ from app.models.trading import (
 PAPER_DOMAIN = "paper-api.alpaca.markets"
 DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 ALLOWED_SIDES = frozenset({"buy", "sell"})
+# Alpaca caps each /v2/orders response at 500 and offers no server-side
+# client_order_id-prefix filter, so per-user reconstruction pages backward
+# through the shared account's feed and filters client-side (V8-02). This is
+# the overall ceiling on how far back we page — it must exceed ORDER_PAGE_SIZE
+# (the per-response cap), otherwise the loop stops after one page and an older
+# order still backing a user's open position is hidden by newer orders from
+# other users.
+MAX_ACCOUNT_ORDER_FETCH = 5000
+
+
+# ---------------------------------------------------------------------------
+# Per-user trade tagging (V8-02)
+# ---------------------------------------------------------------------------
+
+
+def make_client_order_id(user_id: uuid.UUID | str) -> str:
+    """Encode the owning user in an Alpaca client_order_id: ``{user_id}_{uuid}``.
+
+    user_id is a 36-char UUID containing no underscores, so the ``{user_id}_``
+    prefix is unambiguous — one user's prefix can never match another's order.
+    """
+    return f"{user_id}_{uuid.uuid4().hex}"
+
+
+def user_order_prefix(user_id: uuid.UUID | str) -> str:
+    """The client_order_id prefix identifying ``user_id``'s orders."""
+    return f"{user_id}_"
+
+
+def order_belongs_to_user(order: Order, user_id: uuid.UUID | str) -> bool:
+    """True if ``order`` was tagged for ``user_id`` via its client_order_id."""
+    return (order.client_order_id or "").startswith(user_order_prefix(user_id))
 
 
 # ---------------------------------------------------------------------------
@@ -108,9 +141,15 @@ async def place_paper_order(
     *,
     order_type: str = "market",
     time_in_force: str = "day",
+    user_id: uuid.UUID | str | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> Order:
-    """Place a paper order. Always paper — live endpoint will raise."""
+    """Place a paper order. Always paper — live endpoint will raise.
+
+    When ``user_id`` is given the order carries a user-prefixed client_order_id
+    (V8-02) so it can later be attributed back to its owner in the shared Alpaca
+    account.
+    """
     if side not in ALLOWED_SIDES:
         raise ValueError(f"side must be one of {sorted(ALLOWED_SIDES)}, got {side!r}")
     if qty <= 0:
@@ -127,6 +166,8 @@ async def place_paper_order(
             "type": order_type,
             "time_in_force": time_in_force,
         }
+        if user_id is not None:
+            body["client_order_id"] = make_client_order_id(user_id)
         resp = await client.post(
             f"{base}/v2/orders",
             json=body,
@@ -189,6 +230,220 @@ async def get_order_history(
     finally:
         if own_client:
             await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Per-user reconstruction (V8-02)
+#
+# The Alpaca account is shared, so its /v2/positions and account-level
+# portfolio-history endpoints aggregate every user. A user's own
+# positions/history are instead reconstructed from their orders, identified by
+# the client_order_id prefix.
+#
+# NOTE: reconstructing from the shared order feed is the interim approach. The
+# durable per-user accounting moves into our own DB in V8-03/V8-04 (virtual cash
+# + a stored trade log), which removes the dependence on the shared feed
+# entirely.
+# ---------------------------------------------------------------------------
+
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+ORDER_PAGE_SIZE = 500
+# Seed equity for the per-user curve. V8-03 formalizes this as tracked virtual
+# cash; kept here as the shared baseline so the interim curve is meaningful.
+SEED_EQUITY = 100_000.0
+
+
+async def _fetch_account_orders(
+    status: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+    max_orders: int = MAX_ACCOUNT_ORDER_FETCH,
+) -> list[Order]:
+    """Page backward through the shared account's orders, newest first.
+
+    Alpaca caps each /v2/orders response at 500 and offers no client_order_id
+    filter, so per-user reconstruction must scan the account feed. Paging via
+    ``until`` (exclusive) walks past the 500 cap so an older order that still
+    backs a user's open position isn't hidden by newer orders from other users
+    (V8-02 hardening), bounded by ``max_orders``.
+    """
+    base = _require_paper_endpoint()
+    own_client = client is None
+    client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
+    collected: list[Order] = []
+    until: str | None = None
+    try:
+        while len(collected) < max_orders:
+            params = {
+                "limit": str(ORDER_PAGE_SIZE),
+                "status": status,
+                "direction": "desc",
+            }
+            if until is not None:
+                params["until"] = until
+            resp = await client.get(
+                f"{base}/v2/orders", params=params, headers=_auth_headers()
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, list) or not data:
+                break
+            page = [Order.model_validate(o) for o in data]
+            collected.extend(page)
+            if len(data) < ORDER_PAGE_SIZE:
+                break  # last page
+            oldest = page[-1].submitted_at
+            if oldest is None:
+                break  # can't page without a cursor
+            until = oldest.isoformat()
+        return collected[:max_orders]
+    finally:
+        if own_client:
+            await client.aclose()
+
+
+async def get_user_order_history(
+    user_id: uuid.UUID | str,
+    limit: int = 50,
+    *,
+    status: str = "all",
+    client: httpx.AsyncClient | None = None,
+) -> list[Order]:
+    """Return up to ``limit`` of ``user_id``'s most recent orders.
+
+    Keeps only orders whose client_order_id carries the user's prefix, so one
+    user never sees another's.
+    """
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
+    orders = await _fetch_account_orders(status, client=client)
+    mine = [o for o in orders if order_belongs_to_user(o, user_id)]
+    return mine[:limit]
+
+
+async def get_user_positions(
+    user_id: uuid.UUID | str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> list[Position]:
+    """Reconstruct ``user_id``'s open positions from their filled orders."""
+    orders = await _fetch_account_orders("all", client=client)
+    mine = [o for o in orders if order_belongs_to_user(o, user_id)]
+    return reconstruct_positions(mine)
+
+
+async def get_user_portfolio_history(
+    user_id: uuid.UUID | str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> PortfolioHistory:
+    """Per-user equity curve reconstructed from the user's filled orders.
+
+    Replaces the account-level portfolio-history call, which aggregated every
+    user (a cross-user leak). The curve is ``SEED_EQUITY`` plus cumulative
+    realized P/L, so closed trades stay in the curve. Open-position
+    mark-to-market and benchmark windowing are the remit of V8-04; this is the
+    non-leaking interim.
+    """
+    orders = await _fetch_account_orders("all", client=client)
+    mine = [o for o in orders if order_belongs_to_user(o, user_id)]
+    return reconstruct_portfolio_history(mine)
+
+
+def _apply_fill(
+    qty: float, avg: float, side: str, fill: float, price: float
+) -> tuple[float, float, float]:
+    """Apply one fill under average-cost accounting.
+
+    Returns ``(new_qty, new_avg, realized_pnl)`` and handles every direction —
+    adding to a long/short, reducing it, fully closing, and flipping through
+    zero — so short covers keep the short's basis and flips re-base at the fill
+    price. ``qty`` is signed (long > 0, short < 0).
+    """
+    delta = fill if side == "buy" else -fill
+    new_qty = qty + delta
+
+    if qty == 0:
+        # Opening from flat.
+        return new_qty, price, 0.0
+
+    increasing = (qty > 0) == (delta > 0)
+    if increasing:
+        total = abs(qty) + abs(delta)
+        new_avg = (avg * abs(qty) + price * abs(delta)) / total
+        return new_qty, new_avg, 0.0
+
+    # Opposite direction: reducing, closing, or flipping the position.
+    closed = min(abs(delta), abs(qty))
+    realized = (price - avg) * closed if qty > 0 else (avg - price) * closed
+    if abs(delta) < abs(qty):
+        return new_qty, avg, realized  # partial reduce — basis unchanged
+    if abs(delta) == abs(qty):
+        return 0.0, 0.0, realized  # fully closed
+    return new_qty, price, realized  # flipped — remainder opens at the fill price
+
+
+def _filled_chronological(orders: list[Order]) -> list[Order]:
+    filled = [o for o in orders if (o.filled_qty or 0) > 0]
+    filled.sort(key=lambda o: o.submitted_at or _EPOCH)
+    return filled
+
+
+def reconstruct_positions(orders: list[Order]) -> list[Position]:
+    """Net a user's filled orders into current open positions (average-cost).
+
+    Symbols that net to zero are dropped. Live valuation (market_value /
+    unrealized_pl) is left to V8-04; here we report the deterministic,
+    order-derived figures.
+    """
+    # symbol -> (signed_qty, avg_entry_price)
+    state: dict[str, tuple[float, float]] = {}
+    for order in _filled_chronological(orders):
+        qty, avg = state.get(order.symbol, (0.0, 0.0))
+        new_qty, new_avg, _realized = _apply_fill(
+            qty, avg, order.side, float(order.filled_qty), float(order.filled_avg_price or 0.0)
+        )
+        state[order.symbol] = (new_qty, new_avg)
+
+    positions: list[Position] = []
+    for symbol, (qty, avg) in sorted(state.items()):
+        if abs(qty) < 1e-9:
+            continue
+        positions.append(
+            Position(
+                symbol=symbol,
+                qty=abs(qty),
+                side="long" if qty > 0 else "short",
+                avg_entry_price=avg,
+                cost_basis=avg * abs(qty),
+                market_value=None,
+                unrealized_pl=None,
+            )
+        )
+    return positions
+
+
+def reconstruct_portfolio_history(orders: list[Order]) -> PortfolioHistory:
+    """Build a per-user equity curve (SEED + cumulative realized P/L) by day."""
+    state: dict[str, tuple[float, float]] = {}
+    cumulative_realized = 0.0
+    daily: dict[str, float] = {}
+    for order in _filled_chronological(orders):
+        qty, avg = state.get(order.symbol, (0.0, 0.0))
+        new_qty, new_avg, realized = _apply_fill(
+            qty, avg, order.side, float(order.filled_qty), float(order.filled_avg_price or 0.0)
+        )
+        state[order.symbol] = (new_qty, new_avg)
+        cumulative_realized += realized
+        day = (order.submitted_at or _EPOCH).date().isoformat()
+        daily[day] = SEED_EQUITY + cumulative_realized
+
+    points = [
+        PortfolioHistoryPoint(date=day, equity=equity)
+        for day, equity in sorted(daily.items())
+    ]
+    return PortfolioHistory(base_value=SEED_EQUITY, points=points)
 
 
 # Alpaca accepts a fixed vocabulary for these; we validate up front so a typo

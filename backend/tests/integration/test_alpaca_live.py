@@ -63,9 +63,14 @@ async def test_place_paper_order_aapl_buy_one_live(monkeypatch):
     if os.environ.get("FINGROWTH_RUN_ORDER_TEST") != "1":
         pytest.skip("opt-in only; set FINGROWTH_RUN_ORDER_TEST=1 to enable")
 
-    from app.tools.paper_trading import place_paper_order
+    from app.models.database import DEFAULT_USER_ID
+    from app.tools.paper_trading import order_belongs_to_user, place_paper_order
 
-    order = await place_paper_order("AAPL", 1, "buy")
+    # Tag with the default user (V8-02), exactly as the production router does.
+    # An untagged order would be invisible to every get_user_* endpoint yet
+    # still occupy the shared paper account forever — so this real order must
+    # be attributable and reconstructable like any other.
+    order = await place_paper_order("AAPL", 1, "buy", user_id=DEFAULT_USER_ID)
     assert isinstance(order, Order)
     # Alpaca returns 'accepted', 'new', or 'pending_new' for fresh orders;
     # 'filled' is possible during market hours.
@@ -73,3 +78,4 @@ async def test_place_paper_order_aapl_buy_one_live(monkeypatch):
     assert order.symbol == "AAPL"
     assert order.side == "buy"
     assert order.qty == 1.0
+    assert order_belongs_to_user(order, DEFAULT_USER_ID)

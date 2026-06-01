@@ -8,6 +8,7 @@ Acceptance:
 from __future__ import annotations
 
 import json
+import uuid
 
 import httpx
 import pytest
@@ -16,13 +17,24 @@ from app.config import settings
 from app.models.trading import Order, Position
 from app.tools.paper_trading import (
     PAPER_DOMAIN,
+    SEED_EQUITY,
     LiveEndpointError,
     MissingCredentialsError,
     get_order_history,
     get_portfolio_history,
     get_positions,
+    get_user_order_history,
+    get_user_portfolio_history,
+    get_user_positions,
+    make_client_order_id,
+    order_belongs_to_user,
     place_paper_order,
+    reconstruct_portfolio_history,
+    reconstruct_positions,
 )
+
+USER_A = uuid.UUID("11111111-1111-1111-1111-111111111111")
+USER_B = uuid.UUID("22222222-2222-2222-2222-222222222222")
 
 # ---------------------------------------------------------------------------
 # Fixtures + helpers
@@ -411,6 +423,293 @@ async def test_get_portfolio_history_refuses_live_endpoint(monkeypatch):
     monkeypatch.setattr(settings, "alpaca_base_url", "https://api.alpaca.markets")
     with pytest.raises(LiveEndpointError):
         await get_portfolio_history()
+
+
+# ---------------------------------------------------------------------------
+# V8-02: per-user trade tagging and reconstruction
+# ---------------------------------------------------------------------------
+
+
+def _filled_order_payload(
+    user_id,
+    *,
+    symbol: str,
+    side: str,
+    qty: float,
+    price: float,
+    submitted_at: str = "2024-01-15T15:30:00Z",
+) -> dict:
+    return {
+        "id": uuid.uuid4().hex,
+        "client_order_id": f"{user_id}_{uuid.uuid4().hex}",
+        "submitted_at": submitted_at,
+        "symbol": symbol,
+        "qty": str(qty),
+        "filled_qty": str(qty),
+        "filled_avg_price": str(price),
+        "type": "market",
+        "side": side,
+        "time_in_force": "day",
+        "status": "filled",
+    }
+
+
+def test_make_client_order_id_encodes_user_and_is_unique():
+    first = make_client_order_id(USER_A)
+    second = make_client_order_id(USER_A)
+    assert first.startswith(f"{USER_A}_")
+    assert first != second  # unique per order
+
+
+def test_order_belongs_to_user_matches_prefix_only():
+    order = Order.model_validate(
+        _filled_order_payload(USER_A, symbol="AAPL", side="buy", qty=5, price=100)
+    )
+    assert order_belongs_to_user(order, USER_A)
+    assert not order_belongs_to_user(order, USER_B)
+
+
+def test_untagged_order_belongs_to_no_user():
+    order = Order.model_validate(_order_payload())  # client_order_id is a bare uuid
+    assert not order_belongs_to_user(order, USER_A)
+
+
+@pytest.mark.asyncio
+async def test_place_paper_order_tags_client_order_id():
+    captured: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(req)
+        return httpx.Response(200, json=_order_payload())
+
+    async with _make_client(handler) as client:
+        await place_paper_order("AAPL", 1, "buy", user_id=USER_A, client=client)
+
+    body = json.loads(captured[0].content.decode())
+    assert body["client_order_id"].startswith(f"{USER_A}_")
+
+
+@pytest.mark.asyncio
+async def test_place_paper_order_without_user_sends_no_client_order_id():
+    captured: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(req)
+        return httpx.Response(200, json=_order_payload())
+
+    async with _make_client(handler) as client:
+        await place_paper_order("AAPL", 1, "buy", client=client)
+
+    body = json.loads(captured[0].content.decode())
+    assert "client_order_id" not in body
+
+
+def test_reconstruct_positions_nets_buys_and_sells_with_average_cost():
+    orders = [
+        Order.model_validate(_filled_order_payload(
+            USER_A, symbol="AAPL", side="buy", qty=10, price=100,
+            submitted_at="2024-01-01T00:00:00Z")),
+        Order.model_validate(_filled_order_payload(
+            USER_A, symbol="AAPL", side="buy", qty=10, price=120,
+            submitted_at="2024-01-02T00:00:00Z")),
+        Order.model_validate(_filled_order_payload(
+            USER_A, symbol="AAPL", side="sell", qty=5, price=130,
+            submitted_at="2024-01-03T00:00:00Z")),
+    ]
+    positions = reconstruct_positions(orders)
+
+    assert len(positions) == 1
+    pos = positions[0]
+    assert pos.symbol == "AAPL"
+    assert pos.qty == pytest.approx(15.0)  # 10 + 10 - 5
+    assert pos.side == "long"
+    assert pos.avg_entry_price == pytest.approx(110.0)  # (100*10 + 120*10)/20
+    assert pos.cost_basis == pytest.approx(110.0 * 15)
+
+
+def test_reconstruct_positions_drops_fully_closed():
+    orders = [
+        Order.model_validate(_filled_order_payload(
+            USER_A, symbol="AAPL", side="buy", qty=5, price=100,
+            submitted_at="2024-01-01T00:00:00Z")),
+        Order.model_validate(_filled_order_payload(
+            USER_A, symbol="AAPL", side="sell", qty=5, price=110,
+            submitted_at="2024-01-02T00:00:00Z")),
+    ]
+    assert reconstruct_positions(orders) == []
+
+
+@pytest.mark.asyncio
+async def test_get_user_positions_isolates_users_on_same_ticker():
+    """Acceptance: two users trading the same ticker never see each other's."""
+    payloads = [
+        _filled_order_payload(USER_A, symbol="AAPL", side="buy", qty=10, price=100),
+        _filled_order_payload(USER_B, symbol="AAPL", side="buy", qty=3, price=100),
+        _filled_order_payload(USER_B, symbol="TSLA", side="buy", qty=7, price=200),
+    ]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path.endswith("/v2/orders")
+        return httpx.Response(200, json=payloads)
+
+    async with _make_client(handler) as client:
+        a_positions = await get_user_positions(USER_A, client=client)
+        b_positions = await get_user_positions(USER_B, client=client)
+
+    assert {p.symbol: p.qty for p in a_positions} == {"AAPL": 10.0}
+    assert {p.symbol: p.qty for p in b_positions} == {"AAPL": 3.0, "TSLA": 7.0}
+
+
+@pytest.mark.asyncio
+async def test_get_user_order_history_partitions_and_limits():
+    """Acceptance: order history is correctly partitioned by user."""
+    payloads = [
+        _filled_order_payload(USER_A, symbol="AAPL", side="buy", qty=1, price=100),
+        _filled_order_payload(USER_B, symbol="AAPL", side="buy", qty=1, price=100),
+        _filled_order_payload(USER_A, symbol="MSFT", side="buy", qty=1, price=100),
+        _filled_order_payload(USER_B, symbol="TSLA", side="buy", qty=1, price=100),
+        _filled_order_payload(USER_A, symbol="NVDA", side="buy", qty=1, price=100),
+    ]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payloads)
+
+    async with _make_client(handler) as client:
+        a_orders = await get_user_order_history(USER_A, limit=10, client=client)
+        a_limited = await get_user_order_history(USER_A, limit=2, client=client)
+
+    assert len(a_orders) == 3  # only A's three orders
+    assert all(order_belongs_to_user(o, USER_A) for o in a_orders)
+    assert len(a_limited) == 2  # limit slices after filtering
+
+
+@pytest.mark.asyncio
+async def test_get_user_order_history_rejects_non_positive_limit():
+    with pytest.raises(ValueError):
+        await get_user_order_history(USER_A, limit=0)
+
+
+# ---------------------------------------------------------------------------
+# Short-cover / flip accounting (P3 fix)
+# ---------------------------------------------------------------------------
+
+
+def _orders(*specs) -> list[Order]:
+    # specs: (side, qty, price, day)
+    return [
+        Order.model_validate(_filled_order_payload(
+            USER_A, symbol="AAPL", side=side, qty=qty, price=price,
+            submitted_at=f"2024-01-{day:02d}T00:00:00Z"))
+        for side, qty, price, day in specs
+    ]
+
+
+def test_short_cover_keeps_short_basis():
+    # Short 10 @100, buy 5 @90 -> still short 5, basis stays 100 (not 110).
+    positions = reconstruct_positions(_orders(("sell", 10, 100, 1), ("buy", 5, 90, 2)))
+    assert len(positions) == 1
+    pos = positions[0]
+    assert pos.side == "short"
+    assert pos.qty == pytest.approx(5.0)
+    assert pos.avg_entry_price == pytest.approx(100.0)
+
+
+def test_adding_to_short_uses_weighted_average():
+    # Short 10 @100 then short 5 @120 -> short 15 @ (100*10+120*5)/15.
+    positions = reconstruct_positions(_orders(("sell", 10, 100, 1), ("sell", 5, 120, 2)))
+    assert positions[0].side == "short"
+    assert positions[0].qty == pytest.approx(15.0)
+    assert positions[0].avg_entry_price == pytest.approx((1000 + 600) / 15)
+
+
+def test_flip_short_to_long_rebases_at_fill_price():
+    # Short 10 @100, buy 15 @90 -> long 5 @90.
+    positions = reconstruct_positions(_orders(("sell", 10, 100, 1), ("buy", 15, 90, 2)))
+    assert positions[0].side == "long"
+    assert positions[0].qty == pytest.approx(5.0)
+    assert positions[0].avg_entry_price == pytest.approx(90.0)
+
+
+def test_flip_long_to_short_rebases_at_fill_price():
+    # Long 10 @100, sell 15 @110 -> short 5 @110.
+    positions = reconstruct_positions(_orders(("buy", 10, 100, 1), ("sell", 15, 110, 2)))
+    assert positions[0].side == "short"
+    assert positions[0].qty == pytest.approx(5.0)
+    assert positions[0].avg_entry_price == pytest.approx(110.0)
+
+
+# ---------------------------------------------------------------------------
+# Order paging beyond 500 (P2 fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconstruction_pages_past_500_account_orders():
+    """An old user buy beyond the first 500-order page is still captured."""
+    # Page 1: 500 orders from USER_B (newer). Page 2 (via `until`): one older
+    # USER_A buy that backs an open position.
+    page1 = [
+        _filled_order_payload(
+            USER_B, symbol="TSLA", side="buy", qty=1, price=200,
+            submitted_at="2024-02-01T00:00:00Z")
+        for _ in range(500)
+    ]
+    page2 = [
+        _filled_order_payload(
+            USER_A, symbol="AAPL", side="buy", qty=10, price=100,
+            submitted_at="2024-01-01T00:00:00Z")
+    ]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = page2 if "until" in req.url.params else page1
+        return httpx.Response(200, json=body)
+
+    async with _make_client(handler) as client:
+        positions = await get_user_positions(USER_A, client=client)
+
+    assert {p.symbol: p.qty for p in positions} == {"AAPL": 10.0}
+
+
+# ---------------------------------------------------------------------------
+# Per-user portfolio history (P1 leak fix)
+# ---------------------------------------------------------------------------
+
+
+def test_reconstruct_portfolio_history_tracks_realized_pnl():
+    orders = _orders(("buy", 10, 100, 1), ("sell", 10, 110, 2))
+    history = reconstruct_portfolio_history(orders)
+
+    assert history.base_value == SEED_EQUITY
+    equities = {p.date: p.equity for p in history.points}
+    assert equities["2024-01-01"] == pytest.approx(SEED_EQUITY)            # after buy
+    assert equities["2024-01-02"] == pytest.approx(SEED_EQUITY + 100.0)    # +$100 realized
+
+
+@pytest.mark.asyncio
+async def test_get_user_portfolio_history_is_per_user():
+    """Acceptance (V8-04 precursor): the curve reflects only the user's trades,
+    never the shared account — closing the cross-user leak."""
+    payloads = [
+        # USER_A: +$100 realized.
+        _filled_order_payload(USER_A, symbol="AAPL", side="buy", qty=10, price=100,
+                              submitted_at="2024-01-01T00:00:00Z"),
+        _filled_order_payload(USER_A, symbol="AAPL", side="sell", qty=10, price=110,
+                              submitted_at="2024-01-02T00:00:00Z"),
+        # USER_B: a big win that must NOT show up on A's curve.
+        _filled_order_payload(USER_B, symbol="TSLA", side="buy", qty=100, price=100,
+                              submitted_at="2024-01-01T00:00:00Z"),
+        _filled_order_payload(USER_B, symbol="TSLA", side="sell", qty=100, price=200,
+                              submitted_at="2024-01-02T00:00:00Z"),
+    ]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payloads)
+
+    async with _make_client(handler) as client:
+        history = await get_user_portfolio_history(USER_A, client=client)
+
+    # A's realized gain is $100, not the $10,000 from B's trades.
+    assert history.points[-1].equity == pytest.approx(SEED_EQUITY + 100.0)
 
 
 # ---------------------------------------------------------------------------

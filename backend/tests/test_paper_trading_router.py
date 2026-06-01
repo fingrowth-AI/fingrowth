@@ -19,6 +19,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.models.database import DEFAULT_USER_ID
 from app.models.market import PriceBar
 from app.models.trading import Order, PortfolioHistory, PortfolioHistoryPoint, Position
 from app.routers import paper_trading as router_module
@@ -92,6 +93,8 @@ async def test_place_order_returns_accepted_order(monkeypatch, client: AsyncClie
     assert captured["args"] == ("AAPL", 10.0, "buy")
     assert captured["kwargs"]["order_type"] == "market"
     assert captured["kwargs"]["time_in_force"] == "day"
+    # V8-02: the order is tagged with the resolved user (default user here).
+    assert captured["kwargs"]["user_id"] == DEFAULT_USER_ID
 
 
 @pytest.mark.asyncio
@@ -172,23 +175,28 @@ async def test_place_order_upstream_http_error_returns_502(
 
 @pytest.mark.asyncio
 async def test_list_positions_returns_positions(monkeypatch, client: AsyncClient):
-    async def fake_get_positions():
+    captured: dict = {}
+
+    async def fake_get_positions(user_id):
+        captured["user_id"] = user_id
         return [_position("AAPL", 5.0), _position("MSFT", 2.0)]
 
-    monkeypatch.setattr(router_module, "get_positions", fake_get_positions)
+    monkeypatch.setattr(router_module, "get_user_positions", fake_get_positions)
 
     resp = await client.get("/api/v1/paper/positions")
     assert resp.status_code == 200
     body = resp.json()
     assert [r["symbol"] for r in body["positions"]] == ["AAPL", "MSFT"]
+    # V8-02: positions are scoped to the resolved user.
+    assert captured["user_id"] == DEFAULT_USER_ID
 
 
 @pytest.mark.asyncio
 async def test_list_positions_empty_list(monkeypatch, client: AsyncClient):
-    async def fake_get_positions():
+    async def fake_get_positions(user_id):
         return []
 
-    monkeypatch.setattr(router_module, "get_positions", fake_get_positions)
+    monkeypatch.setattr(router_module, "get_user_positions", fake_get_positions)
 
     resp = await client.get("/api/v1/paper/positions")
     assert resp.status_code == 200
@@ -204,16 +212,17 @@ async def test_list_positions_empty_list(monkeypatch, client: AsyncClient):
 async def test_list_orders_passes_limit_and_status(monkeypatch, client: AsyncClient):
     captured: dict = {}
 
-    async def fake_get_orders(limit=50, status="all"):
+    async def fake_get_orders(user_id, limit=50, status="all"):
+        captured["user_id"] = user_id
         captured["limit"] = limit
         captured["status"] = status
         return [_order(status="filled"), _order(status="accepted")]
 
-    monkeypatch.setattr(router_module, "get_order_history", fake_get_orders)
+    monkeypatch.setattr(router_module, "get_user_order_history", fake_get_orders)
 
     resp = await client.get("/api/v1/paper/orders?limit=20&status=closed")
     assert resp.status_code == 200
-    assert captured == {"limit": 20, "status": "closed"}
+    assert captured == {"user_id": DEFAULT_USER_ID, "limit": 20, "status": "closed"}
     body = resp.json()
     assert len(body["orders"]) == 2
 
@@ -280,53 +289,55 @@ async def test_benchmark_rejects_non_positive_days(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_portfolio_history_returns_equity_series(
+async def test_portfolio_history_returns_user_equity_series(
     monkeypatch, client: AsyncClient
 ):
     captured: dict = {}
 
-    async def fake_history(period="1M", timeframe="1D"):
-        captured["period"] = period
-        captured["timeframe"] = timeframe
+    async def fake_history(user_id):
+        captured["user_id"] = user_id
         return PortfolioHistory(
-            base_value=10000.0,
+            base_value=100000.0,
             points=[
-                PortfolioHistoryPoint(date="2024-01-15", equity=10000.0),
-                PortfolioHistoryPoint(date="2024-01-16", equity=10250.5),
+                PortfolioHistoryPoint(date="2024-01-15", equity=100000.0),
+                PortfolioHistoryPoint(date="2024-01-16", equity=100250.5),
             ],
         )
 
-    monkeypatch.setattr(router_module, "get_portfolio_history", fake_history)
+    monkeypatch.setattr(router_module, "get_user_portfolio_history", fake_history)
 
     resp = await client.get("/api/v1/paper/portfolio-history?period=3M&timeframe=1D")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["base_value"] == 10000.0
-    assert [p["equity"] for p in body["points"]] == [10000.0, 10250.5]
-    assert captured == {"period": "3M", "timeframe": "1D"}
+    assert body["base_value"] == 100000.0
+    assert [p["equity"] for p in body["points"]] == [100000.0, 100250.5]
+    # V8-02: the curve is scoped to the resolved user, not the shared account.
+    assert captured["user_id"] == DEFAULT_USER_ID
 
 
 @pytest.mark.asyncio
-async def test_portfolio_history_bad_period_returns_400(
+async def test_portfolio_history_tolerates_advisory_period(
     monkeypatch, client: AsyncClient
 ):
-    async def fake_history(period="1M", timeframe="1D"):
-        raise ValueError("period must be one of [...]")
+    # period/timeframe are advisory now (per-user reconstruction is daily), so
+    # an unusual period is accepted rather than 400'd.
+    async def fake_history(user_id):
+        return PortfolioHistory(base_value=100000.0, points=[])
 
-    monkeypatch.setattr(router_module, "get_portfolio_history", fake_history)
+    monkeypatch.setattr(router_module, "get_user_portfolio_history", fake_history)
 
     resp = await client.get("/api/v1/paper/portfolio-history?period=forever")
-    assert resp.status_code == 400
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_portfolio_history_live_endpoint_returns_503(
     monkeypatch, client: AsyncClient
 ):
-    async def fake_history(period="1M", timeframe="1D"):
+    async def fake_history(user_id):
         raise LiveEndpointError("nope")
 
-    monkeypatch.setattr(router_module, "get_portfolio_history", fake_history)
+    monkeypatch.setattr(router_module, "get_user_portfolio_history", fake_history)
 
     resp = await client.get("/api/v1/paper/portfolio-history")
     assert resp.status_code == 503
