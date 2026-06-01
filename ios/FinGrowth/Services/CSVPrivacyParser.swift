@@ -164,12 +164,63 @@ enum CSVPrivacyParser {
         // The shareable profile is built from holdings only — never from the
         // identity fields above — so no PII can leak into it.
         let profile = makeShareableProfile(from: prepared.holdings, now: now)
+        // V9-01: tag the tier 2/3 portfolio fields onto the report so it lists
+        // every extracted field with its tier (tier 1 identity is derived from
+        // the detected PII findings).
+        var report = identity.report
+        report.portfolioFields = portfolioFieldClassifications(
+            for: prepared.holdings, profile: profile
+        )
         return ParsedCSVImport(
             ledger: ledger,
             profile: profile,
             format: prepared.format,
-            piiReport: identity.report
+            piiReport: report
         )
+    }
+
+    // V9-01: classify the portfolio fields the import produced.
+    //   * Ticker symbol + share count are tier 2 (portfolio specific) — they
+    //     live in the device-only ledger but are available to the query
+    //     pipeline, query-scoped.
+    //   * Cost basis, total value, and account type are tier 3 (sensitive
+    //     financial, design §2) — shared only as coarse buckets / generalized
+    //     forms unless the user opts into more detail.
+    // `detail` strings are safe to display: a count or a bucket, never a raw value.
+    private static func portfolioFieldClassifications(
+        for holdings: [LedgerHolding],
+        profile: ShareableProfile
+    ) -> [FieldClassification] {
+        guard !holdings.isEmpty else { return [] }
+        let count = holdings.count
+        let noun = count == 1 ? "holding" : "holdings"
+
+        // Cost basis is shared only as a coarse bucket of the aggregate amount
+        // invested (Σ quantity × cost basis) — never per-share — unless the user
+        // opts into exact. Absent live marks this equals the total-value bucket
+        // (both derive from cost); live mark-to-market (V8-04) would diverge them.
+        let aggregateCost = holdings.reduce(0) { $0 + $1.quantity * $1.costBasis }
+        let costBasisBucket = ValueBucket.bucket(for: aggregateCost)
+
+        var fields: [FieldClassification] = [
+            FieldClassification(field: .tickerSymbol, detail: "\(count) \(noun)"),
+            FieldClassification(field: .shareCount, detail: "\(count) \(noun)"),
+            FieldClassification(field: .costBasis, detail: "bucket: \(costBasisBucket)"),
+            FieldClassification(field: .totalValue, detail: "bucket: \(profile.totalValueBucket)"),
+        ]
+
+        // Account type (e.g. "Roth IRA") is tier 3 too, but only present when the
+        // export shipped it. The detail is a count, never the raw category, so
+        // the report stays safe to surface.
+        let accountTypes = Set(holdings.compactMap { $0.accountType })
+        if !accountTypes.isEmpty {
+            let typeNoun = accountTypes.count == 1 ? "type" : "types"
+            fields.append(FieldClassification(
+                field: .accountType,
+                detail: "\(accountTypes.count) account \(typeNoun), bucketed"
+            ))
+        }
+        return fields
     }
 
     // MARK: - Format detection

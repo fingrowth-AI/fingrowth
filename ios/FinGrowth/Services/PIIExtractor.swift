@@ -14,6 +14,109 @@ import Foundation
 // network) and a Gemma-powered detector for non-standard headers. Per the
 // design, the Gemma path falls back to the heuristic on any failure.
 
+// Three-tier privacy classification (V9-01). Determines how far a field may
+// travel off the device:
+//
+//   1 identity            — hard-walled to the device-only PrivateLedger.
+//   2 portfolioSpecific   — available to the query pipeline (query-scoped).
+//   3 sensitiveFinancial  — bucketed/generalized unless the user opts in.
+//
+// The earlier model treated every portfolio specific as if it were PII and
+// generalized it away; tiering lets cloud analysis receive what it needs (tier
+// 2) while identity (tier 1) never leaves and sensitive financials (tier 3)
+// stay coarse by default.
+enum PrivacyTier: Int, Sendable, CaseIterable, Comparable {
+    case identity = 1
+    case portfolioSpecific = 2
+    case sensitiveFinancial = 3
+
+    static func < (lhs: PrivacyTier, rhs: PrivacyTier) -> Bool { lhs.rawValue < rhs.rawValue }
+
+    var label: String {
+        switch self {
+        case .identity: return "Identity"
+        case .portfolioSpecific: return "Portfolio detail"
+        case .sensitiveFinancial: return "Sensitive financial"
+        }
+    }
+
+    /// One-line description of how this tier is handled when building outbound
+    /// (cloud) context — surfaced in the privacy audit UI.
+    var handling: String {
+        switch self {
+        case .identity: return "Never leaves the device"
+        case .portfolioSpecific: return "Shared only when relevant to the query"
+        case .sensitiveFinancial: return "Bucketed unless you opt in to more detail"
+        }
+    }
+
+    /// Whether a field at this tier is disclosed to the cloud at all at the
+    /// given privacy level (V9-01 policy the V9-02/03 pipeline consults):
+    ///
+    ///   - identity: never, at any level.
+    ///   - portfolioSpecific: always (the query rewriter scopes it to the query).
+    ///   - sensitiveFinancial: only when the user opts into Detailed sharing,
+    ///     and even then as a coarse bucket — never an exact figure.
+    ///
+    /// Matches what `DifferentialPrivacy.generalize` already emits (a value
+    /// bucket only at `.detailed`); this names the rule so it can be reused.
+    func isDisclosed(at level: PortfolioPrivacyLevel) -> Bool {
+        switch self {
+        case .identity: return false
+        case .portfolioSpecific: return true
+        case .sensitiveFinancial: return level == .detailed
+        }
+    }
+}
+
+// A field the parser can extract, and the privacy tier it belongs to (V9-01).
+enum ClassifiedField: String, Sendable, CaseIterable {
+    // Tier 1 — identity
+    case accountNumber, accountHolder, ssn, email, phone
+    // Tier 2 — portfolio specific
+    case tickerSymbol, shareCount
+    // Tier 3 — sensitive financial
+    case costBasis, totalValue, accountType
+
+    var tier: PrivacyTier {
+        switch self {
+        case .accountNumber, .accountHolder, .ssn, .email, .phone:
+            return .identity
+        case .tickerSymbol, .shareCount:
+            return .portfolioSpecific
+        case .costBasis, .totalValue, .accountType:
+            return .sensitiveFinancial
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .accountNumber: return "Account number"
+        case .accountHolder: return "Account holder"
+        case .ssn: return "SSN"
+        case .email: return "Email"
+        case .phone: return "Phone"
+        case .tickerSymbol: return "Ticker symbol"
+        case .shareCount: return "Share count"
+        case .costBasis: return "Cost basis"
+        case .totalValue: return "Total value"
+        case .accountType: return "Account type"
+        }
+    }
+}
+
+// One extracted field tagged with its tier (V9-01). The audit record so every
+// field's tier is inspectable. `detail` is always safe to display — masked PII
+// for tier 1, a count for tier 2, the value bucket for tier 3 — never a raw
+// sensitive value.
+struct FieldClassification: Equatable, Sendable {
+    let field: ClassifiedField
+    let detail: String
+
+    var tier: PrivacyTier { field.tier }
+    var label: String { field.label }
+}
+
 struct PIIFinding: Equatable, Sendable {
     enum Kind: String, Sendable, CaseIterable {
         case accountNumber
@@ -31,6 +134,19 @@ struct PIIFinding: Equatable, Sendable {
             case .phone: return "Phone"
             }
         }
+
+        // Detected PII is always tier 1 identity (V9-01).
+        var classifiedField: ClassifiedField {
+            switch self {
+            case .accountNumber: return .accountNumber
+            case .holderName: return .accountHolder
+            case .ssn: return .ssn
+            case .email: return .email
+            case .phone: return .phone
+            }
+        }
+
+        var tier: PrivacyTier { classifiedField.tier }
     }
 
     let kind: Kind
@@ -40,10 +156,17 @@ struct PIIFinding: Equatable, Sendable {
     let confidence: Double  // 0...1
     /// Where it was found (column header or "metadata").
     let context: String
+
+    /// The privacy tier of this finding — always tier 1 identity (V9-01).
+    var tier: PrivacyTier { kind.tier }
 }
 
 struct PIIReport: Equatable, Sendable {
     var findings: [PIIFinding]
+    /// Tier 2/3 portfolio fields present in the import, tagged with their tier
+    /// (V9-01). Added by the parser once holdings are known; tier 1 identity
+    /// fields are derived from `findings`, so PII-only callers can omit this.
+    var portfolioFields: [FieldClassification] = []
 
     static let empty = PIIReport(findings: [])
 
@@ -51,6 +174,21 @@ struct PIIReport: Equatable, Sendable {
 
     func findings(of kind: PIIFinding.Kind) -> [PIIFinding] {
         findings.filter { $0.kind == kind }
+    }
+
+    /// Every extracted field with its assigned tier (V9-01) — the auditable
+    /// three-tier classification. Tier 1 entries are derived from the detected
+    /// PII findings; tiers 2/3 come from the portfolio fields the parser tagged.
+    var classifications: [FieldClassification] {
+        let identity = findings.map {
+            FieldClassification(field: $0.kind.classifiedField, detail: $0.maskedValue)
+        }
+        return identity + portfolioFields
+    }
+
+    /// Fields classified at a given tier (V9-01).
+    func fields(in tier: PrivacyTier) -> [FieldClassification] {
+        classifications.filter { $0.tier == tier }
     }
 }
 

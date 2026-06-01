@@ -255,6 +255,142 @@ final class CSVPrivacyParserTests: XCTestCase {
         XCTAssertFalse(profiles.first?.sectorWeightsJSON.isEmpty ?? true)
     }
 
+    // MARK: - V9-01: three-tier privacy classification
+
+    // A Fidelity export carrying both identity fields (account number + holder)
+    // and the usual holdings, so every tier is exercised in one import.
+    private static let tieredCSV = """
+    Account Number,Account Holder,Symbol,Quantity,Average Cost Basis
+    X12345678,Jane Q Public,AAPL,10,150.00
+    X12345678,Jane Q Public,MSFT,5,300.00
+    """
+
+    private func tierOf(_ field: ClassifiedField, in report: PIIReport) -> PrivacyTier? {
+        report.classifications.first { $0.field == field }?.tier
+    }
+
+    func testReportClassifiesEveryFieldWithATier() throws {
+        // AC4: the PIIReport lists each extracted field with its assigned tier.
+        let result = try CSVPrivacyParser.parse(csv: Self.tieredCSV)
+        let report = result.piiReport
+
+        let expected: [ClassifiedField: PrivacyTier] = [
+            .accountNumber: .identity,
+            .accountHolder: .identity,
+            .tickerSymbol: .portfolioSpecific,
+            .shareCount: .portfolioSpecific,
+            .costBasis: .sensitiveFinancial,
+            .totalValue: .sensitiveFinancial,
+        ]
+        for (field, tier) in expected {
+            XCTAssertEqual(tierOf(field, in: report), tier, "\(field) should be \(tier)")
+        }
+        // Every classification carries a tier (no untagged fields).
+        XCTAssertFalse(report.classifications.isEmpty)
+    }
+
+    func testIdentityFieldsAreTier1AndStayOnDevice() throws {
+        // AC1: account number + holder name are tier 1 and never leave the device.
+        let result = try CSVPrivacyParser.parse(csv: Self.tieredCSV)
+
+        XCTAssertEqual(tierOf(.accountNumber, in: result.piiReport), .identity)
+        XCTAssertEqual(tierOf(.accountHolder, in: result.piiReport), .identity)
+
+        // They live on the device-only ledger...
+        XCTAssertEqual(result.ledger.accountNumber, "X12345678")
+        XCTAssertEqual(result.ledger.accountHolder, "Jane Q Public")
+
+        // ...and never bleed into the shareable profile.
+        XCTAssertFalse(result.profile.sectorWeightsJSON.contains("Jane"))
+        XCTAssertFalse(result.profile.sectorWeightsJSON.contains("X12345678"))
+        XCTAssertFalse(result.profile.positionSizeBucketsJSON.contains("X12345678"))
+
+        // The report only ever holds a masked rendering of identity, not the raw.
+        let holder = result.piiReport.findings(of: .holderName).first
+        XCTAssertNotNil(holder)
+        XCTAssertNotEqual(holder?.maskedValue, "Jane Q Public")
+    }
+
+    func testTickerAndShareCountAreTier2AndAvailable() throws {
+        // AC2: ticker symbols + share counts are tier 2, available to the pipeline.
+        let result = try CSVPrivacyParser.parse(csv: Self.tieredCSV)
+
+        XCTAssertEqual(tierOf(.tickerSymbol, in: result.piiReport), .portfolioSpecific)
+        XCTAssertEqual(tierOf(.shareCount, in: result.piiReport), .portfolioSpecific)
+
+        // The actual values are present (on the ledger) for the query pipeline,
+        // not hard-walled like tier 1.
+        let byTicker = Dictionary(uniqueKeysWithValues: result.ledger.holdings.map { ($0.ticker, $0) })
+        XCTAssertEqual(byTicker["AAPL"]?.quantity, 10)
+        XCTAssertEqual(byTicker["MSFT"]?.quantity, 5)
+        XCTAssertTrue(PrivacyTier.portfolioSpecific.isDisclosed(at: .minimal))
+    }
+
+    func testCostBasisAndTotalValueAreTier3AndBucketed() throws {
+        // AC3: total value + cost basis are tier 3 and bucketed by default.
+        let result = try CSVPrivacyParser.parse(csv: Self.tieredCSV)
+
+        XCTAssertEqual(tierOf(.costBasis, in: result.piiReport), .sensitiveFinancial)
+        XCTAssertEqual(tierOf(.totalValue, in: result.piiReport), .sensitiveFinancial)
+
+        // Both tier-3 financials are expressed as coarse buckets — never exact.
+        // Aggregate cost = 10*150 + 5*300 = $3,000 → "<10k".
+        let costBasis = result.piiReport.classifications.first { $0.field == .costBasis }
+        let totalValue = result.piiReport.classifications.first { $0.field == .totalValue }
+        XCTAssertEqual(costBasis?.detail, "bucket: <10k")
+        XCTAssertEqual(totalValue?.detail, "bucket: <10k")
+        // Neither classification leaks the exact $3,000 figure.
+        XCTAssertFalse(costBasis?.detail.contains("3000") ?? true)
+        XCTAssertFalse(costBasis?.detail.contains("3,000") ?? true)
+        XCTAssertEqual(result.profile.totalValueBucket, "<10k")
+    }
+
+    func testAccountTypeIsTier3AndListedWhenPresent() throws {
+        // P3 / design §2: account types are tier 3 sensitive financials. When an
+        // export ships one, it must appear in the classification with its tier.
+        let csv = """
+        Account Number,Account Name,Account Type,Symbol,Quantity,Average Cost Basis
+        X12345678,INDIVIDUAL,Roth IRA,AAPL,10,150.00
+        """
+        let result = try CSVPrivacyParser.parse(csv: csv)
+
+        // The holding captured the raw account type (device-only)...
+        XCTAssertEqual(result.ledger.holdings.first?.accountType, "Roth IRA")
+        // ...and the report lists it as a tier-3 field.
+        XCTAssertEqual(tierOf(.accountType, in: result.piiReport), .sensitiveFinancial)
+
+        // The audit detail is a safe count, never the raw "Roth IRA" category.
+        let acct = result.piiReport.classifications.first { $0.field == .accountType }
+        XCTAssertNotNil(acct)
+        XCTAssertFalse(acct!.detail.contains("Roth"))
+        XCTAssertFalse(acct!.detail.contains("IRA"))
+    }
+
+    func testAccountTypeOmittedFromClassificationWhenAbsent() throws {
+        // No account-type column → no tier-3 account-type entry (we only list
+        // fields actually extracted).
+        let result = try CSVPrivacyParser.parse(csv: Self.tieredCSV)
+        XCTAssertNil(tierOf(.accountType, in: result.piiReport))
+    }
+
+    func testTier3DisclosureHonorsPrivacyLevel() throws {
+        // AC3: tier 3 is bucketed unless the user opts into more detail.
+        XCTAssertFalse(PrivacyTier.sensitiveFinancial.isDisclosed(at: .minimal))
+        XCTAssertFalse(PrivacyTier.sensitiveFinancial.isDisclosed(at: .moderate))
+        XCTAssertTrue(PrivacyTier.sensitiveFinancial.isDisclosed(at: .detailed))
+        // Identity never discloses, at any level; portfolio always does.
+        for level in PortfolioPrivacyLevel.allCases {
+            XCTAssertFalse(PrivacyTier.identity.isDisclosed(at: level))
+            XCTAssertTrue(PrivacyTier.portfolioSpecific.isDisclosed(at: level))
+        }
+    }
+
+    func testNoHoldingsYieldsNoPortfolioTiers() throws {
+        // Defensive: identity can still be detected without any tier 2/3 fields.
+        let csv = "Account Number,Account Name,Symbol,Quantity,Average Cost Basis\n"
+        XCTAssertThrowsError(try CSVPrivacyParser.parse(csv: csv))  // no valid rows
+    }
+
     // MARK: - Helpers
 
     private func decodeWeights(_ json: String) -> [String: Double]? {
