@@ -102,13 +102,20 @@ async def gather_research(
     query: str,
     ticker: str,
     *,
+    user_id: object | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> ResearchPacket:
     """Gather filings, prices and news for ``ticker`` into a ResearchPacket.
 
     The three data tools are fetched concurrently. ``return_exceptions=True``
     means one failing source never aborts the others — failures surface as
-    ``ok=False`` entries in :attr:`ResearchPacket.sources`.
+    ``ok=False`` entries in :attr:`ResearchPacket.sources`. That seam is also
+    how a V8-05 quota exhaustion degrades: the price source comes back
+    ``ok=False`` with a clear message rather than crashing the pipeline.
+
+    ``user_id`` bills the (uncached) Alpha Vantage price fetch against that
+    user's daily allocation (V8-05). SEC EDGAR and Finnhub are separate keys and
+    are not metered here.
     """
     symbol = ticker.strip().upper()
 
@@ -119,7 +126,7 @@ async def gather_research(
             get_company_filings(
                 symbol, forms=_FILING_FORMS, limit=_FILING_LIMIT, client=client
             ),
-            get_daily_prices(symbol, days=_PRICE_DAYS, client=client),
+            get_daily_prices(symbol, days=_PRICE_DAYS, user_id=user_id, client=client),
             get_company_news(symbol, days_back=_NEWS_DAYS_BACK, client=client),
             return_exceptions=True,
         )
@@ -165,5 +172,8 @@ def researcher_node(state: dict[str, Any]) -> dict[str, Any]:
     """
     query = state.get("query", "")
     ticker = state.get("ticker", "")
-    packet = asyncio.run(gather_research(query, ticker))
+    # user_id is carried in the graph state (set by the analysis router) so the
+    # uncached price fetch is metered against the requesting user (V8-05).
+    user_id = state.get("user_id")
+    packet = asyncio.run(gather_research(query, ticker, user_id=user_id))
     return {"path": ["researcher"], "research": packet.model_dump(mode="json")}

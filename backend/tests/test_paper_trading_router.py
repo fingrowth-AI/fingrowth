@@ -531,6 +531,51 @@ async def test_performance_rejects_non_positive_days(client: AsyncClient):
 
 
 # ---------------------------------------------------------------------------
+# V8-05 (P1): benchmark symbol allowlist — close the unbilled-fetch bypass
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_benchmark_rejects_arbitrary_symbol(monkeypatch, client: AsyncClient):
+    """A non-benchmark ticker can't be fetched (unbilled) via /benchmark."""
+
+    async def _must_not_fetch(*a, **k):  # pragma: no cover - must not run
+        raise AssertionError("arbitrary symbol must be rejected before fetch")
+
+    monkeypatch.setattr(router_module, "get_daily_prices", _must_not_fetch)
+
+    resp = await client.get("/api/v1/paper/benchmark?symbol=NVDA&days=5")
+    assert resp.status_code == 400
+    assert "benchmark" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_performance_rejects_arbitrary_symbol(monkeypatch, client: AsyncClient):
+    async def _must_not_fetch(*a, **k):  # pragma: no cover - must not run
+        raise AssertionError("arbitrary symbol must be rejected before fetch")
+
+    monkeypatch.setattr(router_module, "get_daily_prices", _must_not_fetch)
+
+    resp = await client.get("/api/v1/paper/performance?symbol=AAPL&days=5")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_benchmark_allows_allowlisted_symbol(monkeypatch, client: AsyncClient):
+    async def fake_bars(symbol, days=30, **kwargs):
+        return [
+            PriceBar(ticker=symbol.upper(), date=date(2024, 1, 2), open=1.0,
+                     high=1.0, low=1.0, close=1.0, volume=1)
+        ]
+
+    monkeypatch.setattr(router_module, "get_daily_prices", fake_bars)
+
+    resp = await client.get("/api/v1/paper/benchmark?symbol=QQQ&days=5")
+    assert resp.status_code == 200
+    assert resp.json()["symbol"] == "QQQ"
+
+
+# ---------------------------------------------------------------------------
 # GET /paper/positions
 # ---------------------------------------------------------------------------
 

@@ -19,9 +19,11 @@ import pytest
 import app.tools.market_data as market_data
 from app.config import settings
 from app.models.market import CompanyOverview, PriceBar
+from app.services import api_quota
 from app.tools.market_data import (
     DEFAULT_TTL_SECONDS,
     MissingAPIKeyError,
+    QuotaExceededError,
     RateLimitError,
     StalePriceDataError,
     _clear_cache,
@@ -493,3 +495,196 @@ async def test_missing_api_key_raises(monkeypatch):
 def test_default_ttl_is_one_hour():
     """Sanity: the default TTL is 1 hour as described in the design doc."""
     assert DEFAULT_TTL_SECONDS == 3600
+
+
+# ---------------------------------------------------------------------------
+# V8-05: per-user quota + cross-user cache sharing
+# ---------------------------------------------------------------------------
+
+USER_A = "11111111-1111-1111-1111-111111111111"
+USER_B = "22222222-2222-2222-2222-222222222222"
+
+
+@pytest.fixture
+async def _fresh_quota():
+    """In-memory quota counter, cleared around each quota test."""
+    api_quota.set_backend(api_quota._InMemoryBackend())
+    await api_quota.reset()
+    yield
+    await api_quota.reset()
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_serves_other_users_with_zero_api_calls(_fresh_quota, monkeypatch):
+    """Acceptance: a ticker fetched by any user serves all users from cache, and
+    the second user is not billed."""
+    monkeypatch.setattr(settings, "alpha_vantage_daily_quota_per_user", 1)
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=_daily_payload(30))
+
+    async with _make_client(handler) as client:
+        await get_daily_prices("MSFT", 30, user_id=USER_A, client=client)
+        # USER_B requests the same ticker — served from cache, no upstream call,
+        # and B's own allocation (limit 1) is untouched.
+        await get_daily_prices("MSFT", 30, user_id=USER_B, client=client)
+        # Proof B wasn't billed: B can still make their one allowed live call.
+        await get_daily_prices("AAPL", 30, user_id=USER_B, client=client)
+
+    assert calls["n"] == 2  # MSFT fetched once (shared), AAPL once for B
+
+
+@pytest.mark.asyncio
+async def test_single_user_cannot_exceed_daily_quota(_fresh_quota, monkeypatch):
+    """Acceptance: a single user cannot consume more than their allocation."""
+    monkeypatch.setattr(settings, "alpha_vantage_daily_quota_per_user", 2)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_daily_payload(30))
+
+    async with _make_client(handler) as client:
+        await get_daily_prices("MSFT", 30, user_id=USER_A, client=client)
+        await get_daily_prices("AAPL", 30, user_id=USER_A, client=client)
+        # Third distinct ticker is a cache miss → would be the 3rd live call.
+        with pytest.raises(QuotaExceededError):
+            await get_daily_prices("NVDA", 30, user_id=USER_A, client=client)
+
+
+@pytest.mark.asyncio
+async def test_quota_message_is_clear_and_non_crashing(_fresh_quota, monkeypatch):
+    """Acceptance: quota-exhausted users get a clear message, not a crash."""
+    monkeypatch.setattr(settings, "alpha_vantage_daily_quota_per_user", 1)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_daily_payload(30))
+
+    async with _make_client(handler) as client:
+        await get_daily_prices("MSFT", 30, user_id=USER_A, client=client)
+        with pytest.raises(QuotaExceededError) as excinfo:
+            await get_daily_prices("AAPL", 30, user_id=USER_A, client=client)
+
+    # A MarketDataError subclass (so callers degrade gracefully) with a message
+    # that explains the situation and the reset, not a stack-trace.
+    assert isinstance(excinfo.value, market_data.MarketDataError)
+    msg = str(excinfo.value).lower()
+    assert "limit" in msg and "reset" in msg
+
+
+@pytest.mark.asyncio
+async def test_quota_not_charged_when_user_id_is_none(_fresh_quota, monkeypatch):
+    """The shared benchmark path (user_id=None) is never billed, no matter how
+    low the per-user allocation is set."""
+    monkeypatch.setattr(settings, "alpha_vantage_daily_quota_per_user", 1)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_daily_payload(30))
+
+    async with _make_client(handler) as client:
+        for symbol in ("SPY", "QQQ", "DIA"):
+            await get_daily_prices(symbol, 30, client=client)  # no user_id
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_does_not_consume_quota(_fresh_quota, monkeypatch):
+    """Repeated fetches of the same ticker by one user cost only one call."""
+    monkeypatch.setattr(settings, "alpha_vantage_daily_quota_per_user", 1)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_daily_payload(30))
+
+    async with _make_client(handler) as client:
+        await get_daily_prices("MSFT", 30, user_id=USER_A, client=client)
+        # Same ticker again → cache hit, no quota spent, so it doesn't raise.
+        await get_daily_prices("MSFT", 30, user_id=USER_A, client=client)
+        await get_daily_prices("MSFT", 10, user_id=USER_A, client=client)
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_fetch_refunds_quota(_fresh_quota, monkeypatch):
+    """P2: a failed upstream call (here a rate-limit notice) is refunded, so the
+    user isn't charged for data they never received."""
+    monkeypatch.setattr(settings, "alpha_vantage_daily_quota_per_user", 1)
+    state = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        state["n"] += 1
+        if state["n"] == 1:
+            return httpx.Response(
+                200,
+                json={"Information": "Our standard API rate limit is 25 requests per day."},
+            )
+        return httpx.Response(200, json=_daily_payload(30))
+
+    async with _make_client(handler) as client:
+        with pytest.raises(RateLimitError):
+            await get_daily_prices("MSFT", 30, user_id=USER_A, client=client)
+        # The refunded attempt means the user still has their single call.
+        bars = await get_daily_prices("AAPL", 30, user_id=USER_A, client=client)
+
+    assert len(bars) == 30
+
+
+@pytest.mark.asyncio
+async def test_missing_key_does_not_consume_quota(_fresh_quota, monkeypatch):
+    """P2: a missing API key never reaches the network, so it can't burn quota."""
+    monkeypatch.setattr(settings, "alpha_vantage_daily_quota_per_user", 1)
+    monkeypatch.setattr(settings, "alpha_vantage_api_key", "")
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_daily_payload(30))
+
+    async with _make_client(handler) as client:
+        with pytest.raises(MissingAPIKeyError):
+            await get_daily_prices("MSFT", 30, user_id=USER_A, client=client)
+        monkeypatch.setattr(settings, "alpha_vantage_api_key", "test-key")
+        bars = await get_daily_prices("AAPL", 30, user_id=USER_A, client=client)
+
+    assert len(bars) == 30
+
+
+# ---------------------------------------------------------------------------
+# V8-05 (P3): output-size-aware caching — a compact cache can't under-serve a
+# wider window.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compact_cache_does_not_underserve_a_wider_window():
+    """A compact (~100-bar) cache must not satisfy a later > 100-day request."""
+    sizes: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        size = req.url.params.get("outputsize")
+        sizes.append(size)
+        return httpx.Response(
+            200, json=_daily_payload(num_days=200 if size == "full" else 100)
+        )
+
+    async with _make_client(handler) as client:
+        compact = await get_daily_prices("MSFT", 30, client=client)   # compact
+        wide = await get_daily_prices("MSFT", 150, client=client)     # needs full
+
+    assert len(compact) == 30
+    assert len(wide) == 150            # not capped at the cached 100
+    assert sizes == ["compact", "full"]
+
+
+@pytest.mark.asyncio
+async def test_full_cache_serves_a_narrower_window_without_refetch():
+    """A cached full series satisfies any narrower window — one upstream call."""
+    calls = 0
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_daily_payload(num_days=200))
+
+    async with _make_client(handler) as client:
+        wide = await get_daily_prices("MSFT", 150, client=client)    # full
+        narrow = await get_daily_prices("MSFT", 30, client=client)   # from full cache
+
+    assert len(wide) == 150
+    assert len(narrow) == 30
+    assert calls == 1

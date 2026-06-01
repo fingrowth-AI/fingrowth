@@ -1,7 +1,20 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.middleware.disclaimer import DisclaimerMiddleware
 from app.routers import analysis, auth, health, paper_trading
+from app.services import api_quota
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # V8-05: wire the per-user quota counter to Redis when reachable (it falls
+    # back to an in-memory counter otherwise — see app.services.api_quota).
+    await api_quota.startup()
+    yield
+    await api_quota.shutdown()
+
 
 app = FastAPI(
     title="FinGrowth API",
@@ -10,6 +23,7 @@ app = FastAPI(
         "Privacy-preserving investment research backend. "
         "This is a research tool, not investment advice."
     ),
+    lifespan=lifespan,
 )
 
 # Compliance gate (P6-03): guarantees every AnalysisResponse carries the

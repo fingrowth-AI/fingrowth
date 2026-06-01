@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     sec_edgar_user_agent: str = "FinGrowth/1.0 (research-tool)"
 
+    # Per-user daily Alpha Vantage allocation (V8-05). The free tier is 25
+    # calls/day on one shared key; this caps how many *uncached* calls a single
+    # user may trigger per UTC day so one user can't starve the rest. Only real
+    # upstream calls count — cache hits (incl. the shared SPY benchmark) are
+    # free. Tune down as the user base grows, or raise it with a paid tier; a
+    # value <= 0 disables the quota entirely.
+    alpha_vantage_daily_quota_per_user: int = 25
+
     # Reject daily price data whose most-recent bar is older than this many
     # calendar days (V7-02). Sized to absorb weekends plus a long holiday
     # weekend so a normal market gap is tolerated, but genuinely stale data is

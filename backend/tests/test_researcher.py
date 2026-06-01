@@ -272,3 +272,49 @@ def test_researcher_node_survives_source_failure(monkeypatch):
     assert len(research["price_data"]) == 2
     sec = next(s for s in research["sources"] if s["name"] == "SEC EDGAR")
     assert sec["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# V8-05: per-user quota threading + graceful exhaustion
+# ---------------------------------------------------------------------------
+
+
+async def test_quota_exhaustion_degrades_price_source(monkeypatch):
+    """A quota-exhausted price fetch surfaces as a failed source with a clear
+    message — the pipeline keeps running on the other sources, no crash."""
+    from app.tools.market_data import QuotaExceededError
+
+    _stub_tools(
+        monkeypatch,
+        filings=_filings(2),
+        prices=QuotaExceededError("Daily market-data limit reached; resets tomorrow."),
+        news=_news(3),
+    )
+
+    packet = await gather_research("q", "AAPL", user_id="user-1")
+
+    assert packet.price_data == []
+    assert packet.degraded
+    av = next(s for s in packet.sources if s.name == "Alpha Vantage")
+    assert av.ok is False
+    assert "limit reached" in av.error.lower()
+    # The other sources are unaffected.
+    assert len(packet.filings) == 2
+    assert len(packet.news) == 3
+
+
+def test_researcher_node_threads_user_id_from_state(monkeypatch):
+    """The graph node passes state['user_id'] into the metered price fetch."""
+    captured: dict = {}
+
+    async def fake_gather(query, ticker, *, user_id=None, client=None):
+        captured["user_id"] = user_id
+        return ResearchPacket(
+            ticker=ticker, query=query, filings=[], price_data=[], news=[], sources=[]
+        )
+
+    monkeypatch.setattr(researcher, "gather_research", fake_gather)
+
+    researcher_node({"query": "q", "ticker": "AAPL", "user_id": "user-42"})
+
+    assert captured["user_id"] == "user-42"

@@ -68,6 +68,17 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/paper", tags=["paper-trading"])
 
+# V8-05: the SPY/benchmark series is shared across all users, so cache it for a
+# full day and never bill it to a user — one fetch serves everyone per day.
+_BENCHMARK_CACHE_TTL_SECONDS = 60 * 60 * 24
+
+# Benchmark fetches are unbilled (shared, server-side). To stop that from being
+# a quota-bypass hole — request arbitrary tickers via ?symbol= and drain the
+# shared Alpha Vantage key for free — only true, broad-market benchmark series
+# are accepted here. Per-ticker prices must go through the metered analysis
+# path. The set is small and curated; widen it deliberately, not by user input.
+_BENCHMARK_SYMBOLS = frozenset({"SPY", "QQQ", "DIA", "IWM", "VTI", "VOO"})
+
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -400,8 +411,20 @@ async def _fetch_benchmark_bars(symbol: str, days: int) -> list[PriceBar]:
         raise HTTPException(status_code=400, detail="days must be > 0")
     if days > 365 * 5:
         raise HTTPException(status_code=400, detail="days must be <= 1825")
+    if symbol.upper() not in _BENCHMARK_SYMBOLS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported benchmark {symbol.upper()!r}; choose one of "
+                f"{sorted(_BENCHMARK_SYMBOLS)}."
+            ),
+        )
     try:
-        bars = await get_daily_prices(symbol, days=days)
+        # No user_id: the benchmark is server-side/shared, never billed to a
+        # user, and cached for a day so it's fetched once per day (V8-05).
+        bars = await get_daily_prices(
+            symbol, days=days, ttl=_BENCHMARK_CACHE_TTL_SECONDS
+        )
     except MissingAPIKeyError as exc:
         raise HTTPException(
             status_code=401,

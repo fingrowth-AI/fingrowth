@@ -18,6 +18,7 @@ import httpx
 
 from app.config import settings
 from app.models.market import CompanyOverview, PriceBar
+from app.services import api_quota
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -27,6 +28,10 @@ ALPHA_VANTAGE_BASE = "https://www.alphavantage.co/query"
 DEFAULT_TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 DEFAULT_TTL_SECONDS = 60 * 60  # 1 hour
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 1.1
+# Alpha Vantage's TIME_SERIES_DAILY `compact` output returns ~100 bars; beyond
+# that we must request `full`. Used to pick output size and to key the cache by
+# it so a compact payload never under-serves a wider window.
+_COMPACT_MAX_BARS = 100
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +49,15 @@ class RateLimitError(MarketDataError):
 
 class MissingAPIKeyError(MarketDataError):
     """ALPHA_VANTAGE_API_KEY is not configured."""
+
+
+class QuotaExceededError(MarketDataError):
+    """The user has used their daily Alpha Vantage allocation (V8-05).
+
+    A ``MarketDataError`` subclass on purpose: callers (the researcher) already
+    degrade gracefully on market-data failures, so an exhausted quota surfaces
+    as a clear, non-fatal "source unavailable" message rather than a crash.
+    """
 
 
 class StalePriceDataError(MarketDataError):
@@ -93,9 +107,11 @@ def daily_prices_fetched_at(ticker: str) -> datetime | None:
     """Wall-clock time the cached daily series for ``ticker`` was first fetched.
 
     Returns the original fetch time even when the series is currently served
-    from cache (V7-03); ``None`` if nothing is cached for the symbol.
+    from cache (V7-03); ``None`` if nothing is cached for the symbol. Prefers the
+    full series' timestamp, matching the lookup order in get_daily_prices.
     """
-    entry = _cache.get(f"daily:{ticker.upper()}")
+    symbol = ticker.upper()
+    entry = _cache.get(f"daily:{symbol}:full") or _cache.get(f"daily:{symbol}:compact")
     return entry[2] if entry else None
 
 
@@ -154,6 +170,39 @@ async def _request(
     return payload
 
 
+async def _enforce_quota(user_id: object | None) -> None:
+    """Charge one upstream call to ``user_id``'s daily allocation (V8-05).
+
+    Called only on a cache *miss* (a real upstream call), so cache hits never
+    consume quota — that's what lets one user's fetch serve everyone for free.
+    A ``None`` user is exempt: server-side/shared fetches such as the SPY
+    benchmark are never billed to any user. Raises :class:`QuotaExceededError`
+    when the user is already at their allocation.
+    """
+    if user_id is None:
+        return
+    allowed = await api_quota.try_consume(
+        user_id, limit=settings.alpha_vantage_daily_quota_per_user
+    )
+    if not allowed:
+        raise QuotaExceededError(
+            "Daily market-data limit reached for your account. Cached data is "
+            "still available, and your allowance resets tomorrow (UTC)."
+        )
+
+
+async def _refund_quota(user_id: object | None) -> None:
+    """Give back a unit charged by :func:`_enforce_quota` when the call failed.
+
+    A cache miss reserves quota *before* the request; if that request never
+    yields usable, cacheable data (missing key, transport error, upstream 5xx,
+    rate-limit notice, parse failure) the user shouldn't be charged for it.
+    """
+    if user_id is None:
+        return
+    await api_quota.refund(user_id)
+
+
 async def _respect_rate_limit() -> None:
     """Serialize live Alpha Vantage cache misses to avoid free-tier burst limits."""
     global _last_request_at
@@ -181,12 +230,20 @@ async def get_daily_prices(
     *,
     ttl: float = DEFAULT_TTL_SECONDS,
     max_staleness_days: int | None = None,
+    user_id: object | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> list[PriceBar]:
     """Return the most-recent ``days`` daily OHLCV bars for ``ticker``.
 
     The full AV response is cached per-ticker; varying ``days`` slices off the
-    cached series without re-issuing a request.
+    cached series without re-issuing a request. The cache is keyed by ticker
+    alone, so a series fetched for one user serves every user with zero further
+    upstream calls (V8-05).
+
+    ``user_id`` (V8-05) bills cache *misses* against that user's daily Alpha
+    Vantage allocation and raises :class:`QuotaExceededError` once they're out;
+    cache hits are free. Pass ``None`` for server-side/shared fetches (e.g. the
+    SPY benchmark), which are never billed to a user.
 
     ``max_staleness_days`` bounds how old the newest bar may be (V7-02). ``None``
     uses :attr:`Settings.max_price_staleness_days`; a non-positive value disables
@@ -197,25 +254,36 @@ async def get_daily_prices(
     if days <= 0:
         raise ValueError("days must be > 0")
     symbol = ticker.upper()
-    cache_key = f"daily:{symbol}"
+    # `compact` returns ~100 bars; `full` returns 20+ years. The output size is
+    # part of the cache key, otherwise a compact payload cached for one caller
+    # would under-serve a later caller asking for > 100 days. A cached *full*
+    # series satisfies any window, so prefer it before falling back to compact.
+    size = "full" if days > _COMPACT_MAX_BARS else "compact"
 
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
     try:
         async with _cache_lock:
-            payload = _cache_get(cache_key)
+            payload = _cache_get(f"daily:{symbol}:full")
+            if payload is None and size == "compact":
+                payload = _cache_get(f"daily:{symbol}:compact")
         if payload is None:
-            payload = await _request(
-                client,
-                {
-                    "function": "TIME_SERIES_DAILY",
-                    "symbol": symbol,
-                    # `compact` returns ~100 bars; `full` returns 20+ years.
-                    "outputsize": "full" if days > 100 else "compact",
-                },
-            )
+            await _enforce_quota(user_id)
+            try:
+                payload = await _request(
+                    client,
+                    {
+                        "function": "TIME_SERIES_DAILY",
+                        "symbol": symbol,
+                        "outputsize": size,
+                    },
+                )
+            except BaseException:
+                # The reserved call never produced usable data — refund it.
+                await _refund_quota(user_id)
+                raise
             async with _cache_lock:
-                _cache_set(cache_key, payload, ttl)
+                _cache_set(f"daily:{symbol}:{size}", payload, ttl)
 
         series: dict[str, dict[str, str]] = payload.get("Time Series (Daily)") or {}
         # Keys are ISO-formatted dates; sort descending and take the top N.
@@ -274,12 +342,14 @@ async def get_company_overview(
     ticker: str,
     *,
     ttl: float = DEFAULT_TTL_SECONDS,
+    user_id: object | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> CompanyOverview | None:
     """Return company fundamentals from AV's ``OVERVIEW`` endpoint.
 
     Returns ``None`` for unknown tickers — Alpha Vantage answers those with an
-    empty object rather than a 404.
+    empty object rather than a 404. ``user_id`` bills cache misses against the
+    user's daily allocation (V8-05); cache hits are free.
     """
     symbol = ticker.upper()
     cache_key = f"overview:{symbol}"
@@ -290,10 +360,15 @@ async def get_company_overview(
         async with _cache_lock:
             payload = _cache_get(cache_key)
         if payload is None:
-            payload = await _request(
-                client,
-                {"function": "OVERVIEW", "symbol": symbol},
-            )
+            await _enforce_quota(user_id)
+            try:
+                payload = await _request(
+                    client,
+                    {"function": "OVERVIEW", "symbol": symbol},
+                )
+            except BaseException:
+                await _refund_quota(user_id)
+                raise
             async with _cache_lock:
                 _cache_set(cache_key, payload, ttl)
 
