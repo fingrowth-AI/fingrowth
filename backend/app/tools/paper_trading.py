@@ -13,7 +13,7 @@ orders, OCO/OTO, and trailing-stop variants are left to a follow-up.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
 import httpx
@@ -492,6 +492,56 @@ def reconstruct_portfolio_history(orders: list[Order]) -> PortfolioHistory:
         for day, equity in sorted(daily.items())
     ]
     return PortfolioHistory(base_value=SEED_EQUITY, points=points)
+
+
+def reconstruct_equity_series(
+    orders: list[Order],
+    dates: list[date],
+    starting_cash: float = SEED_EQUITY,
+) -> list[PortfolioHistoryPoint]:
+    """Sample a user's equity at each date in ``dates`` (V8-04).
+
+    Equity is ``starting_cash + cumulative realized P/L`` as of each date —
+    derived from the reconstructed trade log and virtual cash, never from live
+    marks or Alpaca's account-level history. Two consequences the acceptance
+    criteria call for:
+
+    * **Per-user**: ``orders`` are the caller's own (prefix-filtered) fills, so
+      the curve reflects only their trades.
+    * **Closed trades persist**: realized P/L is accumulated and carried
+      forward, so a completed winning trade permanently lifts the curve instead
+      of vanishing when its proceeds are spent.
+
+    Sampling on a supplied date list (rather than only trade days) lets the
+    curve be overlaid on a benchmark series that shares those trading days —
+    every date gets a point via forward-fill. Dates before the first fill read
+    the untouched ``starting_cash``.
+
+    Realized-only by design: unrealized appreciation of still-open positions is
+    intentionally not marked here, keeping the series deterministic and
+    independent of intraday price availability.
+    """
+    filled = _filled_chronological(orders)
+    state: dict[str, tuple[float, float]] = {}
+    realized = 0.0
+    i = 0
+    points: list[PortfolioHistoryPoint] = []
+    for day in sorted(dates):
+        # Fold in every fill submitted on or before this day, once.
+        while i < len(filled) and (filled[i].submitted_at or _EPOCH).date() <= day:
+            order = filled[i]
+            qty, avg = state.get(order.symbol, (0.0, 0.0))
+            new_qty, new_avg, pnl = _apply_fill(
+                qty, avg, order.side, float(order.filled_qty),
+                float(order.filled_avg_price or 0.0),
+            )
+            state[order.symbol] = (new_qty, new_avg)
+            realized += pnl
+            i += 1
+        points.append(
+            PortfolioHistoryPoint(date=day.isoformat(), equity=starting_cash + realized)
+        )
+    return points
 
 
 # Alpaca accepts a fixed vocabulary for these; we validate up front so a typo

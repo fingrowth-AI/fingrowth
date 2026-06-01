@@ -24,6 +24,7 @@ from app.models.market import PriceBar
 from app.models.trading import Order, PortfolioHistory, PortfolioHistoryPoint, Position
 from app.routers import paper_trading as router_module
 from app.services.virtual_balance import Balance
+from app.tools.market_data import RateLimitError
 from app.tools.paper_trading import LiveEndpointError, MissingCredentialsError
 
 BASE = "http://test"
@@ -426,6 +427,107 @@ async def test_balance_returns_tracked_cash(monkeypatch, client: AsyncClient):
     assert resp.json() == {"starting_cash": 100000.0, "cash": 98750.0}
     # Balance is scoped to the resolved user (default user here).
     assert captured["user_id"] == DEFAULT_USER_ID
+
+
+# ---------------------------------------------------------------------------
+# GET /paper/performance (V8-04)
+# ---------------------------------------------------------------------------
+
+
+def _spy_bars():
+    return [
+        PriceBar(ticker="SPY", date=date(2024, 1, d), open=p, high=p, low=p,
+                 close=p, volume=1)
+        for d, p in [(1, 400.0), (2, 410.0), (3, 420.0)]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_performance_overlays_user_curve_on_benchmark(
+    monkeypatch, client: AsyncClient
+):
+    """Acceptance: per-user curve, closed trades preserved, comparable to SPY
+    over the same window."""
+    captured: dict = {}
+
+    async def fake_spy(symbol, days=30, **kwargs):
+        captured["symbol"] = symbol
+        return _spy_bars()
+
+    async def fake_cash(session, user_id):
+        return 100000.0
+
+    async def fake_orders(user_id, *, status="all", client=None):
+        captured["user_id"] = user_id
+        # Buy then sell at a $100 gain, realized on 2024-01-02.
+        return [
+            _order(
+                side="buy", filled_qty=10.0, filled_avg_price=100.0,
+                submitted_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            ),
+            _order(
+                side="sell", filled_qty=10.0, filled_avg_price=110.0,
+                submitted_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            ),
+        ]
+
+    monkeypatch.setattr(router_module, "get_daily_prices", fake_spy)
+    monkeypatch.setattr(router_module, "get_or_create_starting_cash", fake_cash)
+    monkeypatch.setattr(router_module, "get_user_orders", fake_orders)
+
+    resp = await client.get("/api/v1/paper/performance?days=3")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["benchmark_symbol"] == "SPY"
+    assert body["base_equity"] == pytest.approx(100000.0)
+    # The curve is scoped to the resolved user (default user here).
+    assert captured["user_id"] == DEFAULT_USER_ID
+
+    pts = body["points"]
+    # Same window/x-axis as the benchmark.
+    assert [p["date"] for p in pts] == ["2024-01-01", "2024-01-02", "2024-01-03"]
+    # Portfolio: 100000 -> 100100 -> 100100 (closed gain preserved on day 3).
+    assert pts[2]["equity"] == pytest.approx(100100.0)
+    assert pts[0]["portfolio_return"] == pytest.approx(0.0)
+    assert pts[1]["portfolio_return"] == pytest.approx(0.001)
+    assert pts[2]["portfolio_return"] == pytest.approx(0.001)
+    # Benchmark: 400 -> 410 -> 420 == 0, +2.5%, +5%.
+    assert pts[1]["benchmark_return"] == pytest.approx(0.025)
+    assert pts[2]["benchmark_return"] == pytest.approx(0.05)
+
+
+@pytest.mark.asyncio
+async def test_performance_empty_benchmark_returns_empty_curve(
+    monkeypatch, client: AsyncClient
+):
+    async def fake_empty(symbol, days=30, **kwargs):
+        return []
+
+    monkeypatch.setattr(router_module, "get_daily_prices", fake_empty)
+
+    resp = await client.get("/api/v1/paper/performance?days=3")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["points"] == []
+    assert body["base_equity"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_performance_maps_market_data_rate_limit(monkeypatch, client: AsyncClient):
+    async def fake_rl(symbol, days=30, **kwargs):
+        raise RateLimitError("slow down")
+
+    monkeypatch.setattr(router_module, "get_daily_prices", fake_rl)
+
+    resp = await client.get("/api/v1/paper/performance?days=3")
+    assert resp.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_performance_rejects_non_positive_days(client: AsyncClient):
+    resp = await client.get("/api/v1/paper/performance?days=0")
+    assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------

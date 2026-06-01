@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import date
 
 import httpx
 import pytest
@@ -30,6 +31,7 @@ from app.tools.paper_trading import (
     order_belongs_to_user,
     place_paper_order,
     reconstruct_cash,
+    reconstruct_equity_series,
     reconstruct_portfolio_history,
     reconstruct_positions,
     reconstruct_realized_pnl,
@@ -760,6 +762,43 @@ def test_cash_reconciles_after_fully_closing_a_position():
     assert positions == []
     assert realized == pytest.approx(100.0)
     assert cash == pytest.approx(SEED_EQUITY + 100.0)
+
+
+# ---------------------------------------------------------------------------
+# V8-04: per-user equity curve sampled on benchmark trading days
+# ---------------------------------------------------------------------------
+
+
+def test_equity_series_flat_at_seed_before_first_trade():
+    orders = _orders(("buy", 10, 100, 5))  # first fill 2024-01-05
+    dates = [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)]
+    series = reconstruct_equity_series(orders, dates, SEED_EQUITY)
+    assert [p.equity for p in series] == [pytest.approx(SEED_EQUITY)] * 3
+
+
+def test_equity_series_preserves_closed_trade_gain():
+    """Acceptance: closed (realized) trades remain in the cumulative curve."""
+    orders = _orders(("buy", 10, 100, 1), ("sell", 10, 110, 2))
+    dates = [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)]
+    eq = {p.date: p.equity for p in reconstruct_equity_series(orders, dates, SEED_EQUITY)}
+    assert eq["2024-01-01"] == pytest.approx(SEED_EQUITY)        # after buy, unrealized
+    assert eq["2024-01-02"] == pytest.approx(SEED_EQUITY + 100)  # +$100 realized
+    assert eq["2024-01-03"] == pytest.approx(SEED_EQUITY + 100)  # persists — never vanishes
+
+
+def test_equity_series_forward_fills_idle_days():
+    orders = _orders(("buy", 10, 100, 1), ("sell", 5, 120, 3))
+    dates = [date(2024, 1, d) for d in (1, 2, 3, 4)]
+    eq = {p.date: p.equity for p in reconstruct_equity_series(orders, dates, SEED_EQUITY)}
+    assert eq["2024-01-02"] == pytest.approx(SEED_EQUITY)        # idle day holds prior
+    assert eq["2024-01-03"] == pytest.approx(SEED_EQUITY + 100)  # sell 5 @120 vs 100 avg
+    assert eq["2024-01-04"] == pytest.approx(SEED_EQUITY + 100)
+
+
+def test_equity_series_respects_custom_starting_cash_and_sorts_dates():
+    series = reconstruct_equity_series([], [date(2024, 1, 3), date(2024, 1, 1)], 5_000.0)
+    assert [p.date for p in series] == ["2024-01-01", "2024-01-03"]
+    assert all(p.equity == pytest.approx(5_000.0) for p in series)
 
 
 # ---------------------------------------------------------------------------

@@ -32,8 +32,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser
 from app.db import get_session
-from app.models.trading import Order, PortfolioHistory, Position
-from app.services.virtual_balance import available_buying_power, get_balance
+from app.models.market import PriceBar
+from app.models.trading import (
+    Order,
+    PerformanceComparison,
+    PerformancePoint,
+    PortfolioHistory,
+    Position,
+)
+from app.services.virtual_balance import (
+    available_buying_power,
+    get_balance,
+    get_or_create_starting_cash,
+)
 from app.tools.market_data import (
     MarketDataError,
     MissingAPIKeyError,
@@ -46,9 +57,11 @@ from app.tools.paper_trading import (
     LiveEndpointError,
     MissingCredentialsError,
     get_user_order_history,
+    get_user_orders,
     get_user_portfolio_history,
     get_user_positions,
     place_paper_order,
+    reconstruct_equity_series,
 )
 
 logger = logging.getLogger(__name__)
@@ -347,8 +360,9 @@ async def portfolio_history(
 
     Reconstructed from the user's own trades (V8-02) — never Alpaca's
     account-level history, which would fold in every other user's paper trades.
-    ``period`` / ``timeframe`` are accepted for API compatibility; per-user
-    windowing and open-position mark-to-market are completed in V8-04.
+    Returns one point per trade day. ``period`` / ``timeframe`` are accepted for
+    API compatibility but not applied here; for a windowed curve aligned to a
+    benchmark, use GET /paper/performance (V8-04).
     """
     try:
         return await get_user_portfolio_history(current_user)
@@ -376,15 +390,11 @@ class BenchmarkResponse(BaseModel):
     points: list[BenchmarkPoint]
 
 
-@router.get("/benchmark", response_model=BenchmarkResponse)
-async def benchmark(
-    current_user: CurrentUser, symbol: str = "SPY", days: int = 30
-) -> BenchmarkResponse:
-    """Return ``days`` of daily closing prices for ``symbol`` (default SPY).
+async def _fetch_benchmark_bars(symbol: str, days: int) -> list[PriceBar]:
+    """Daily bars for ``symbol`` over ``days``, ascending, with errors mapped.
 
-    Designed for the iOS Portfolio "Performance" sub-view (P4-04 acceptance:
-    "cumulative return vs. S&P 500"). Uses the same Alpha Vantage client as
-    the analyst — output is already cached.
+    Shared by the benchmark and performance endpoints so both surface the same
+    clean statuses (and fail closed on a transport error rather than 500ing).
     """
     if days <= 0:
         raise HTTPException(status_code=400, detail="days must be > 0")
@@ -402,12 +412,89 @@ async def benchmark(
             status_code=429,
             detail="Benchmark data is rate-limited; try again later.",
         ) from exc
+    except StalePriceDataError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Benchmark data is stale: {exc}"
+        ) from exc
     except MarketDataError as exc:
         logger.exception("benchmark fetch failed")
         raise HTTPException(
             status_code=502, detail=f"Benchmark fetch failed: {exc}"
         ) from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Benchmark provider returned HTTP {exc.response.status_code}.",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=503, detail="Benchmark data is unreachable; try again later."
+        ) from exc
     # AV returns newest-first; reverse so the chart can iterate left-to-right.
-    bars = sorted(bars, key=lambda b: b.date)
+    return sorted(bars, key=lambda b: b.date)
+
+
+@router.get("/benchmark", response_model=BenchmarkResponse)
+async def benchmark(
+    current_user: CurrentUser, symbol: str = "SPY", days: int = 30
+) -> BenchmarkResponse:
+    """Return ``days`` of daily closing prices for ``symbol`` (default SPY).
+
+    Designed for the iOS Portfolio "Performance" sub-view (P4-04 acceptance:
+    "cumulative return vs. S&P 500"). Uses the same Alpha Vantage client as
+    the analyst — output is already cached.
+    """
+    bars = await _fetch_benchmark_bars(symbol, days)
     points = [BenchmarkPoint(date=b.date.isoformat(), close=b.close) for b in bars]
     return BenchmarkResponse(symbol=symbol.upper(), points=points)
+
+
+@router.get("/performance", response_model=PerformanceComparison)
+async def performance(
+    current_user: CurrentUser,
+    symbol: str = "SPY",
+    days: int = 30,
+    session: AsyncSession = Depends(get_session),
+) -> PerformanceComparison:
+    """The user's equity curve vs. a benchmark over the same window (V8-04).
+
+    The benchmark series defines the window's trading days; the per-user equity
+    curve is sampled on those same days (from the user's reconstructed trade log
+    and virtual cash — never Alpaca's account-level history), so the two overlay
+    on one chart. Both are expressed as cumulative return from the window's
+    first day, so closed trades stay in the curve and the scales line up.
+    """
+    bars = await _fetch_benchmark_bars(symbol, days)
+    if not bars:
+        # No benchmark data → nothing to align against; return an empty curve
+        # rather than dividing by a zero base.
+        return PerformanceComparison(
+            benchmark_symbol=symbol.upper(), base_equity=0.0, points=[]
+        )
+
+    try:
+        starting_cash = await get_or_create_starting_cash(session, current_user)
+        orders = await get_user_orders(current_user)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("performance: user equity inputs failed")
+        raise _map_client_error(exc) from exc
+
+    dates = [b.date for b in bars]
+    equity_points = reconstruct_equity_series(orders, dates, starting_cash)
+
+    base_equity = equity_points[0].equity
+    base_close = bars[0].close
+    points = [
+        PerformancePoint(
+            date=bar.date.isoformat(),
+            equity=eq.equity,
+            portfolio_return=(eq.equity / base_equity - 1.0) if base_equity else 0.0,
+            benchmark_return=(bar.close / base_close - 1.0) if base_close else 0.0,
+        )
+        for bar, eq in zip(bars, equity_points)
+    ]
+    return PerformanceComparison(
+        benchmark_symbol=symbol.upper(), base_equity=base_equity, points=points
+    )

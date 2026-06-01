@@ -64,3 +64,30 @@ class PortfolioHistory(BaseModel):
 
     base_value: float
     points: list[PortfolioHistoryPoint]
+
+
+class PerformancePoint(BaseModel):
+    """One day of the per-user curve aligned to the benchmark (V8-04).
+
+    ``portfolio_return`` and ``benchmark_return`` are cumulative fractions vs.
+    the window's first day (0.05 == +5%), so the two series are directly
+    comparable on one chart despite their different dollar scales.
+    """
+
+    date: str  # ISO yyyy-mm-dd
+    equity: float
+    portfolio_return: float
+    benchmark_return: float
+
+
+class PerformanceComparison(BaseModel):
+    """The user's equity curve overlaid on a benchmark over the same window.
+
+    Powers the Performance tracker's "cumulative return vs. S&P 500" view
+    (P4-04): both series share identical trading dates, so the client can plot
+    them against one x-axis.
+    """
+
+    benchmark_symbol: str
+    base_equity: float  # portfolio equity at the window's first day
+    points: list[PerformancePoint]
