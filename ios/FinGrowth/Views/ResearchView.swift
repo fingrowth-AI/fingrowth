@@ -572,7 +572,9 @@ struct ResearchView: View {
             // Rewrite ON-DEVICE *before* anything leaves the device, then send the
             // rewritten text — so the cloud (and the audit log) only ever see the
             // generalized query. The ticker symbol is public, not PII.
-            let rewritten = await rewriter.rewrite(query: rawQuery, ledger: ledger)
+            let rewritten = await rewriter.rewrite(
+                query: rawQuery, ledger: ledger, privacyLevel: privacyLevel
+            )
             if Task.isCancelled { return }
 
             // Hybrid is the only intent that earns generalized portfolio

@@ -19,28 +19,133 @@ final class QueryRewriterTests: XCTestCase {
     private let concentratedQuery =
         "Should I sell my 500 shares of TSLA bought at $280 given my $50K student loans?"
 
-    func testGeneralizesQuantityCostBasisAndDebt() async {
+    func testGeneralizesCostBasisAndDebtButPreservesShareCount() async {
+        // V9-02: tier 3 (cost basis, debt) is generalized at the default level,
+        // but the tier-2 share count is preserved.
         let result = await QueryRewriter().rewrite(query: concentratedQuery)
 
         XCTAssertTrue(result.changed)
-        // No private specifics survive.
-        for leak in ["500", "$280", "280", "$50K", "50K", "student loans"] {
+        // Tier 3 specifics do not survive.
+        for leak in ["$280", "280", "$50K", "50K", "student loans"] {
             XCTAssertFalse(result.rewrittenText.contains(leak), "leaked \(leak): \(result.rewrittenText)")
         }
-        // Each kind of change is captured.
-        XCTAssertFalse(result.substitutions.filter { $0.type == .quantity }.isEmpty)
+        // Tier 2 share count IS retained — it describes a portfolio, not a person.
+        XCTAssertTrue(result.rewrittenText.contains("500 shares"))
+        // Tier 3 changes are captured; tier 2 is NOT substituted.
         XCTAssertFalse(result.substitutions.filter { $0.type == .costBasis }.isEmpty)
         XCTAssertFalse(result.substitutions.filter { $0.type == .liability }.isEmpty)
+        XCTAssertTrue(result.substitutions.filter { $0.type == .quantity }.isEmpty)
         XCTAssertGreaterThan(result.confidenceScore, 0)
         XCTAssertLessThanOrEqual(result.confidenceScore, 1)
     }
 
-    func testSubstitutionContractForQuantity() async {
-        let result = await QueryRewriter().rewrite(query: concentratedQuery)
-        let quantity = result.substitutions.first { $0.type == .quantity }
-        XCTAssertEqual(quantity?.original, "500 shares")
-        XCTAssertEqual(quantity?.replacement, "concentrated position")
-        XCTAssertEqual(quantity?.type, .quantity)
+    func testShareCountAndTickerPreserved() async {
+        // AC1: 'Should I sell my 500 TSLA shares?' retains the share count and
+        // ticker; with no identity/tier-3 specifics the query is untouched.
+        let result = await QueryRewriter().rewrite(query: "Should I sell my 500 shares of TSLA?")
+        XCTAssertTrue(result.rewrittenText.contains("500 shares"))
+        XCTAssertTrue(result.rewrittenText.contains("TSLA"))
+        XCTAssertTrue(result.substitutions.isEmpty)
+        XCTAssertFalse(result.changed)
+    }
+
+    func testSubstitutionsAreOnlyTier1OrTier3() async {
+        // AC4: the substitutions list reflects only tier 1 (and not-opted-in
+        // tier 3) removals — never tier 2.
+        let ledger = PrivateLedger(
+            accountName: "Brokerage",
+            accountNumber: "X12345678",
+            accountHolder: "John A. Smith"
+        )
+        let result = await QueryRewriter().rewrite(
+            query: "Should I sell my 500 shares of TSLA bought at $280 in my "
+                + "Fidelity account X12345678 held by John A. Smith?",
+            ledger: ledger
+        )
+        XCTAssertFalse(result.substitutions.isEmpty)
+        for sub in result.substitutions {
+            XCTAssertTrue(
+                sub.type.tier == .identity || sub.type.tier == .sensitiveFinancial,
+                "tier 2 must never be substituted, saw \(sub.type) (\(sub.type.tier))"
+            )
+        }
+        // The tier-2 share count rode through untouched.
+        XCTAssertTrue(result.rewrittenText.contains("500 shares"))
+    }
+
+    func testTier3PreservedWhenUserOptsIntoDetailed() async {
+        // V9-02: tier 3 follows the user setting. At .detailed the user has opted
+        // into sharing exact sensitive financials, so cost basis is preserved.
+        let query = "Should I sell my 500 shares of TSLA bought at $280?"
+        let moderate = await QueryRewriter().rewrite(query: query, privacyLevel: .moderate)
+        let detailed = await QueryRewriter().rewrite(query: query, privacyLevel: .detailed)
+
+        XCTAssertFalse(moderate.rewrittenText.contains("$280"))   // generalized by default
+        XCTAssertTrue(detailed.rewrittenText.contains("$280"))    // preserved on opt-in
+        XCTAssertTrue(detailed.substitutions.isEmpty)
+    }
+
+    func testIdentityStrippedEvenWithNoHoldings() async {
+        // AC2: a query needing no holdings still strips incidental identity.
+        let ledger = PrivateLedger(accountName: "Brokerage", accountNumber: "X12345678")
+        let result = await QueryRewriter().rewrite(
+            query: "What's the outlook for account X12345678?",
+            ledger: ledger
+        )
+        XCTAssertFalse(result.rewrittenText.contains("X12345678"))
+        XCTAssertFalse(result.substitutions.filter { $0.type == .accountNumber }.isEmpty)
+    }
+
+    func testFreeformIdentityTokensAreStripped() async {
+        // P1 / AC2: typed identity (email, phone, SSN, account number) must be
+        // stripped even with no ledger match — while tier 2 survives.
+        let query = "Email jane.doe@example.com or call 415-555-0142 re SSN "
+            + "123-45-6789 in account X12345678 — should I buy 500 shares of TSLA?"
+        let result = await QueryRewriter().rewrite(query: query)  // no ledger
+
+        for leak in ["jane.doe@example.com", "415-555-0142", "123-45-6789", "X12345678"] {
+            XCTAssertFalse(result.rewrittenText.contains(leak), "leaked \(leak)")
+        }
+        // Tier 2 specifics ride through untouched.
+        XCTAssertTrue(result.rewrittenText.contains("500 shares"))
+        XCTAssertTrue(result.rewrittenText.contains("TSLA"))
+
+        // Every removal is tier 1, and all four identity kinds fired.
+        let kinds = Set(result.substitutions.map(\.type))
+        XCTAssertTrue(kinds.isSuperset(of: [.email, .phone, .ssn, .accountNumber]))
+        for sub in result.substitutions {
+            XCTAssertEqual(sub.type.tier, .identity)
+        }
+    }
+
+    func testParaphraseMustPreserveTier2() {
+        // P2: a model paraphrase is accepted only if it keeps the tier-2
+        // specifics the deterministic rewrite preserved.
+        let deterministic = "How is my portfolio with 500 shares of TSLA doing?"
+        // Dropping the share count → rejected.
+        XCTAssertFalse(QueryRewriter.preservesTier2("How is my TSLA position doing?", of: deterministic))
+        // Dropping the ticker → rejected.
+        XCTAssertFalse(QueryRewriter.preservesTier2("How are my 500 shares doing?", of: deterministic))
+        // Keeping both → accepted.
+        XCTAssertTrue(QueryRewriter.preservesTier2("Is holding 500 shares of TSLA wise?", of: deterministic))
+        // A non-ticker acronym (RSI) isn't required, so rewording the metric is fine.
+        XCTAssertTrue(QueryRewriter.preservesTier2("What's the relative strength of AAPL?", of: "What is the RSI of AAPL?"))
+    }
+
+    func testNeverEmitsLedgerHoldingsNotInQuery() async {
+        // AC3: the rewriter scopes to the query — it never dumps the ledger.
+        let ledger = PrivateLedger(
+            accountName: "Brokerage",
+            holdings: [
+                LedgerHolding(ticker: "TSLA", quantity: 500, costBasis: 280),
+                LedgerHolding(ticker: "AAPL", quantity: 50, costBasis: 150),
+            ]
+        )
+        let result = await QueryRewriter().rewrite(query: "What is the RSI of NVDA?", ledger: ledger)
+        // None of the ledger's holdings leak into the rewritten query.
+        XCTAssertFalse(result.rewrittenText.contains("TSLA"))
+        XCTAssertFalse(result.rewrittenText.contains("AAPL"))
+        XCTAssertEqual(result.rewrittenText, "What is the RSI of NVDA?")
     }
 
     func testBrokerageNameGeneralized() async {
@@ -91,12 +196,14 @@ final class QueryRewriterTests: XCTestCase {
         XCTAssertFalse(result.rewrittenText.contains("X12345678"), "every occurrence must be scrubbed")
     }
 
-    func testSmallShareCountIsNotConcentrated() async {
+    func testSmallShareCountIsPreserved() async {
+        // V9-02: share counts are tier 2 and pass through verbatim — no
+        // "a position" / "concentrated" generalization, large or small.
         let result = await QueryRewriter().rewrite(query: "Should I trim my 5 shares of AAPL?")
-        let quantity = result.substitutions.first { $0.type == .quantity }
-        XCTAssertEqual(quantity?.replacement, "a position")
+        XCTAssertTrue(result.rewrittenText.contains("5 shares"))
         XCTAssertFalse(result.rewrittenText.contains("concentrated"))
-        XCTAssertFalse(result.rewrittenText.contains("5 shares"))
+        XCTAssertTrue(result.substitutions.filter { $0.type == .quantity }.isEmpty)
+        XCTAssertFalse(result.changed)
     }
 
     func testPublicMarketDollarFactPassesThrough() async {
@@ -135,6 +242,8 @@ final class QueryRewriterTests: XCTestCase {
         let result = await rewriter.rewrite(query: concentratedQuery)
         XCTAssertTrue(result.changed)
         XCTAssertFalse(result.substitutions.isEmpty)
-        XCTAssertFalse(result.rewrittenText.contains("500"))
+        // Tier 3 cost basis is gone; the tier-2 share count is preserved.
+        XCTAssertFalse(result.rewrittenText.contains("$280"))
+        XCTAssertTrue(result.rewrittenText.contains("500 shares"))
     }
 }

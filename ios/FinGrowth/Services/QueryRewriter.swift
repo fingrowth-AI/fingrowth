@@ -21,6 +21,26 @@ struct QuerySubstitution: Equatable, Sendable, Codable {
         case liability
         case accountNumber
         case holderName
+        case email
+        case ssn
+        case phone
+
+        // Three-tier classification (V9-01) that drives what the rewriter removes
+        // (V9-02). Tier 1 identity is always stripped; tier 2 portfolio specifics
+        // (share counts) are preserved; tier 3 sensitive financials follow the
+        // user's privacy level. Brokerage is treated as identity: it names the
+        // institution holding your account, carries no analytical value, and
+        // pairs with identity — so it's hard-walled like other tier 1 fields.
+        var tier: PrivacyTier {
+            switch self {
+            case .accountNumber, .holderName, .brokerage, .email, .ssn, .phone:
+                return .identity
+            case .quantity:
+                return .portfolioSpecific
+            case .costBasis, .amount, .liability:
+                return .sensitiveFinancial
+            }
+        }
     }
 
     let original: String
@@ -44,8 +64,19 @@ struct QueryRewriter: Sendable {
         self.gemma = gemma
     }
 
-    func rewrite(query: String, ledger: PrivateLedger? = nil) async -> RewrittenQuery {
-        let (deterministicText, substitutions) = Self.applyRules(to: query, ledger: ledger)
+    // ``privacyLevel`` governs tier 3 (sensitive financial) handling (V9-02):
+    // at the default minimal/moderate it's generalized away; only when the user
+    // opts into `.detailed` are exact tier-3 figures preserved. Tier 1 identity
+    // is always stripped and tier 2 portfolio specifics (share counts, tickers)
+    // are always preserved, regardless of level.
+    func rewrite(
+        query: String,
+        ledger: PrivateLedger? = nil,
+        privacyLevel: PortfolioPrivacyLevel = .moderate
+    ) async -> RewrittenQuery {
+        let (deterministicText, substitutions) = Self.applyRules(
+            to: query, ledger: ledger, privacyLevel: privacyLevel
+        )
 
         // No private specifics → pass through unchanged (acceptance: clean
         // queries are untouched).
@@ -62,7 +93,11 @@ struct QueryRewriter: Sendable {
         // doesn't leak any specific we just generalized away.
         if let gemma, await gemma.usesRealModel, await gemma.isReady,
            let paraphrase = await modelParaphrase(of: query, gemma: gemma),
-           Self.isSafe(paraphrase, substitutions: substitutions, ledger: ledger) {
+           Self.isSafe(paraphrase, substitutions: substitutions, ledger: ledger),
+           // V9-02: a fluent paraphrase must also *keep* the tier-2 specifics the
+           // deterministic rewrite preserved — dropping "500 shares" would defeat
+           // the whole point. Otherwise fall back to the deterministic text.
+           Self.preservesTier2(paraphrase, of: deterministicText) {
             return RewrittenQuery(
                 originalText: query,
                 rewrittenText: paraphrase,
@@ -84,8 +119,10 @@ struct QueryRewriter: Sendable {
     private func modelParaphrase(of query: String, gemma: GemmaService) async -> String? {
         let prompt = """
         Rewrite the investment question below so it preserves the analytical \
-        intent but removes all personal specifics (share counts, dollar amounts, \
-        brokerage names, personal debts). Reply with only the rewritten question.
+        intent. Keep ticker symbols and share counts — they describe a portfolio, \
+        not a person. Remove only personal identity (names, account numbers, \
+        brokerage names) and personal dollar figures (cost basis, account \
+        balances, debts). Reply with only the rewritten question.
 
         Question: \(query)
         """
@@ -136,7 +173,10 @@ struct QueryRewriter: Sendable {
             addNumbers(sub.original)
             switch sub.type {
             case .brokerage, .holderName: addProperWords(sub.original, minLength: 4)
-            case .accountNumber: fragments.insert(sub.original.lowercased())
+            case .accountNumber, .email, .ssn, .phone:
+                // The whole token is the secret — forbid it verbatim so a
+                // paraphrase can't re-echo a typed email / SSN / phone / acct.
+                fragments.insert(sub.original.lowercased())
             default: break
             }
         }
@@ -150,6 +190,50 @@ struct QueryRewriter: Sendable {
         }
         return fragments
     }
+
+    // MARK: - Tier 2 preservation (V9-02)
+
+    // The tier-2 specifics (share counts, ticker symbols) the cloud is allowed —
+    // and expected — to see. Extracted from the *deterministic* rewrite, which
+    // already preserved them, so a model paraphrase that drops any can be
+    // rejected in favor of the deterministic output.
+    static func tier2Fragments(in text: String) -> Set<String> {
+        var out: Set<String> = []
+        let ns = text as NSString
+        let full = NSRange(location: 0, length: ns.length)
+
+        // Share counts: the digits in "<n> shares".
+        for match in shareCountRegex.matches(in: text, range: full) {
+            let digits = ns.substring(with: match.range(at: 1)).replacingOccurrences(of: ",", with: "")
+            if !digits.isEmpty { out.insert(digits.lowercased()) }
+        }
+        // Ticker-like uppercase tokens (AAPL, BRK.B), minus non-ticker acronyms
+        // so a fluent rewrite of a metric (e.g. "RSI") isn't wrongly rejected.
+        for match in tickerRegex.matches(in: text, range: full) {
+            let token = ns.substring(with: match.range)
+            if !tickerAcronymStopwords.contains(token) { out.insert(token.lowercased()) }
+        }
+        return out
+    }
+
+    // True iff ``paraphrase`` retains every tier-2 specific present in ``source``.
+    static func preservesTier2(_ paraphrase: String, of source: String) -> Bool {
+        let lowered = paraphrase.lowercased()
+        return tier2Fragments(in: source).allSatisfy { lowered.contains($0) }
+    }
+
+    private static let shareCountRegex = makeRegex(#"\b(\d[\d,]*)\s+shares?\b"#)
+    // Case-sensitive (uppercase only) so it matches tickers, not lowercase prose.
+    private static let tickerRegex: NSRegularExpression = {
+        // swiftlint:disable:next force_try
+        try! NSRegularExpression(pattern: #"\b[A-Z]{1,5}(?:\.[A-Z])?\b"#)
+    }()
+    // Common finance acronyms that look like tickers but aren't holdings; a
+    // paraphrase may legitimately reword these, so they aren't required.
+    private static let tickerAcronymStopwords: Set<String> = [
+        "RSI", "MACD", "ETF", "EPS", "IPO", "CEO", "CFO", "SEC", "GDP",
+        "PE", "ATH", "YOY", "USD", "AI", "I", "A", "ROI", "EBITDA",
+    ]
 
     private static let numberRegex = makeRegex(#"\d[\d,]*"#)
     // Generic words that may appear in an `original` but aren't themselves PII.
@@ -168,22 +252,35 @@ struct QueryRewriter: Sendable {
 
     private static func applyRules(
         to query: String,
-        ledger: PrivateLedger?
+        ledger: PrivateLedger?,
+        privacyLevel: PortfolioPrivacyLevel
     ) -> (text: String, substitutions: [QuerySubstitution]) {
         var text = query
         var subs: [QuerySubstitution] = []
 
-        // 1. Exact ledger PII (account number / holder) — most sensitive first.
+        // 1. Exact ledger PII (account number / holder) — tier 1, always.
         for (raw, replacement, kind) in ledgerSecrets(ledger) {
             applyLiteral(raw, replacement: replacement, type: kind, in: &text, subs: &subs)
         }
 
-        // 2. Share counts (magnitude-aware).
-        applyQuantityRule(in: &text, subs: &subs)
+        // 2. Tier 2 (share counts, tickers): preserved (V9-02). The old quantity
+        //    generalization is gone — "500 shares of TSLA" describes a portfolio,
+        //    not a person, and is exactly the analytical detail the cloud needs.
 
-        // 3. Context-specific pattern rules.
+        // 3. Context-specific pattern rules, applied by tier (V9-02):
+        //      * tier 1 (brokerage) — always.
+        //      * tier 3 (cost basis, balances, debts) — only when the user
+        //        hasn't opted into sharing exact sensitive financials.
+        let discloseTier3 = PrivacyTier.sensitiveFinancial.isDisclosed(at: privacyLevel)
         for rule in rules {
-            apply(rule, in: &text, subs: &subs)
+            switch rule.type.tier {
+            case .identity:
+                apply(rule, in: &text, subs: &subs)
+            case .sensitiveFinancial where !discloseTier3:
+                apply(rule, in: &text, subs: &subs)
+            default:
+                break  // tier 2, or opted-in tier 3 → preserved
+            }
         }
         return (text, subs)
     }
@@ -256,6 +353,33 @@ struct QueryRewriter: Sendable {
     // market fact like "Apple's $110B buyback" must pass through unchanged, per
     // the no-PII pass-through criterion. Ordered so specific contexts win.
     private static let rules: [Rule] = [
+        // Tier 1 identity typed directly into a query (no ledger match needed).
+        // These are incidental identity tokens (V9-02 AC2) that must never reach
+        // the cloud, so they're stripped at any privacy level. Patterns are
+        // high-precision to avoid eating tickers / share counts / prices.
+        Rule(
+            regex: makeRegex(#"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"#),
+            replacement: "an email address",
+            type: .email
+        ),
+        Rule(
+            regex: makeRegex(#"\b\d{3}-\d{2}-\d{4}\b"#),
+            replacement: "a personal ID",
+            type: .ssn
+        ),
+        Rule(
+            regex: makeRegex(#"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b"#),
+            replacement: "a phone number",
+            type: .phone
+        ),
+        // An account number stated freeform ("account X12345678", "acct #4471203").
+        // Requires the account keyword and a digit-bearing 6+ token so it can't
+        // swallow "account balance" or a bare share count.
+        Rule(
+            regex: makeRegex(#"\b(?:account|acct)\s*#?\s*(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{6,}\b"#),
+            replacement: "my account",
+            type: .accountNumber
+        ),
         Rule(
             regex: makeRegex(#"\$\s?\d[\d,]*\.?\d*\s*[KkMm]?\s+(?:in\s+)?(?:student\s+loans?|loans?|debt|mortgages?)"#),
             replacement: "significant debt obligations",
@@ -284,29 +408,4 @@ struct QueryRewriter: Sendable {
             type: .amount
         ),
     ]
-
-    // Share counts are generalized but not over-characterized: only a clearly
-    // large holding becomes "concentrated"; a handful of shares stays a neutral
-    // "a position" so small-position intent isn't distorted.
-    private static let concentratedThreshold = 100
-    private static let quantityRegex = makeRegex(#"\b(\d[\d,]*)\s+shares?\b"#)
-
-    private static func applyQuantityRule(in text: inout String, subs: inout [QuerySubstitution]) {
-        let matches = quantityRegex.matches(in: text, range: NSRange(location: 0, length: (text as NSString).length))
-        guard !matches.isEmpty else { return }
-        // Replace right-to-left so earlier match ranges stay valid.
-        var collected: [QuerySubstitution] = []
-        for match in matches.reversed() {
-            let ns = text as NSString
-            let original = ns.substring(with: match.range)
-            let digits = ns.substring(with: match.range(at: 1)).replacingOccurrences(of: ",", with: "")
-            let count = Int(digits) ?? 0
-            let replacement = count >= concentratedThreshold ? "concentrated position" : "a position"
-            collected.append(QuerySubstitution(original: original, replacement: replacement, type: .quantity))
-            if let range = Range(match.range, in: text) {
-                text.replaceSubrange(range, with: replacement)
-            }
-        }
-        subs.append(contentsOf: collected.reversed())
-    }
 }
