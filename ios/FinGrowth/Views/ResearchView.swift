@@ -53,6 +53,10 @@ struct ResearchView: View {
     // V11-01: "What this means for you" — the user's real position in the
     // analyzed ticker, resolved on-device. Additive; nil when the ticker isn't held.
     @State private var positionInsight: PositionInsight?
+    // V11-03: portfolio-level overview (diversification, sector concentration,
+    // overall risk). Computed on-device from the generalized profile for a
+    // whole-portfolio question; nil for a single-ticker query.
+    @State private var portfolioAnalysis: PortfolioAnalysis?
     @Environment(\.colorScheme) private var colorScheme
 
     // Wire names mirror backend/app/routers/analysis.py — progress frames emit
@@ -77,6 +81,9 @@ struct ResearchView: View {
                         }
                         if let localOnlyMessage {
                             localOnlyBanner(message: localOnlyMessage)
+                        }
+                        if let portfolioAnalysis {
+                            portfolioAnalysisSection(portfolioAnalysis)
                         }
                         if let controller {
                             progressSection(controller: controller)
@@ -248,9 +255,12 @@ struct ResearchView: View {
     }
 
     private var canSubmit: Bool {
-        !query.trimmingCharacters(in: .whitespaces).isEmpty
-            && !ticker.trimmingCharacters(in: .whitespaces).isEmpty
-            && controller?.isRunning != true
+        let hasQuery = !query.trimmingCharacters(in: .whitespaces).isEmpty
+        // V11-03: a whole-portfolio question has no single ticker, so it doesn't
+        // require the ticker field — it's answered on-device from the profile.
+        let hasTickerOrIsPortfolio = !ticker.trimmingCharacters(in: .whitespaces).isEmpty
+            || PortfolioAnalyzer.isPortfolioLevelQuery(query)
+        return hasQuery && hasTickerOrIsPortfolio && controller?.isRunning != true
     }
 
     // MARK: - Progress
@@ -486,6 +496,41 @@ struct ResearchView: View {
         }
     }
 
+    // V11-03: portfolio-level overview — diversification, sector concentration,
+    // and overall risk, computed on-device from the generalized profile. Leads
+    // with a plain-language conclusion (Phase 10); findings follow as chips.
+    private func portfolioAnalysisSection(_ analysis: PortfolioAnalysis) -> some View {
+        Card(title: PortfolioAnalysis.title) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(analysis.lead)
+                    .font(.body)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ForEach(Array(analysis.findings.enumerated()), id: \.offset) { _, finding in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(finding.tag)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(FinTheme.mint.opacity(0.15))
+                            .foregroundStyle(FinTheme.mint)
+                            .clipShape(Capsule())
+                        Text(finding.detail)
+                            .font(.subheadline)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Text(analysis.note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(analysis.disclaimer)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     // P5-08: holdings-specific context resolved on-device. Rendered as its own
     // card so the cloud analysis above stays verbatim.
     private func personalizedContextSection(_ context: PersonalizedContext) -> some View {
@@ -572,6 +617,7 @@ struct ResearchView: View {
         localOnlyMessage = nil
         enrichedContext = nil
         positionInsight = nil
+        portfolioAnalysis = nil
         // Drop any link to the previous analysis. persistIfNeeded reassigns
         // these once the new result is saved; until then the "Test with paper
         // trade" button must not attach a trade to a stale session.
@@ -587,11 +633,47 @@ struct ResearchView: View {
         let ledger = ledgers.first
         let profile = profiles.first
         let privacyLevel = settings.portfolioPrivacyLevel
-        // V11-02 (P2): the concentration context sent to the cloud is scoped over
-        // holdings from *every* imported ledger — the same book the on-device
-        // "What this means for you" card uses (see recontextualize) — so the two
-        // never disagree across multiple accounts. Only generalized buckets leave.
+        // Holdings from *every* imported ledger. Used both by the V11-03
+        // whole-portfolio overview below and the V11-02 cloud concentration
+        // scoping further down, so "whole portfolio" spans all accounts.
         let allHoldings = ledgers.flatMap { $0.holdings }
+
+        // V11-03: a whole-portfolio question is answered entirely on-device from
+        // the *generalized* profile — diversification, sector concentration, and
+        // overall risk — so no holdings or identity ever leave. Intercept it
+        // before the cloud-routing path runs at all.
+        //
+        // Only when the ticker field is empty: a question that names a ticker
+        // ("how does AAPL fit in my portfolio") wants the per-ticker pipeline,
+        // not the generic overview — so a filled ticker takes precedence.
+        if tickerSymbol.isEmpty && PortfolioAnalyzer.isPortfolioLevelQuery(rawQuery) {
+            routingTask?.cancel()
+            controller?.clear()
+            submittedQuery = rawQuery
+            // P1: build the generalized profile over holdings from *every*
+            // imported ledger, so "whole portfolio" spans all accounts (Fidelity
+            // + Vanguard + …) rather than just the newest import's profile.
+            let held = allHoldings.filter { $0.quantity > 0 }
+            guard !held.isEmpty else {
+                portfolioAnalysis = nil
+                localOnlyMessage = "Import a brokerage CSV in the Portfolio tab to get a portfolio "
+                    + "overview. No cloud request was made."
+                return
+            }
+            // The generalized profile is the query-scoped context for a
+            // portfolio-level question (V9-03): sector categories + buckets, never
+            // identity. The analysis is interpreted in plain language on-device.
+            let combined = CSVPrivacyParser.makeShareableProfile(from: held, now: .now)
+            let generalized = DifferentialPrivacy.generalize(
+                profile: combined, privacyLevel: privacyLevel
+            )
+            portfolioAnalysis = PortfolioAnalyzer.analyze(generalized)
+            if portfolioAnalysis == nil {
+                localOnlyMessage = "Your imported portfolio has no sector data to summarize yet. "
+                    + "No cloud request was made."
+            }
+            return
+        }
 
         // Intent routing (P5-07): classify the query first, then run the
         // pipeline the intent calls for. localOnly never contacts the cloud;

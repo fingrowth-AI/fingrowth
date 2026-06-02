@@ -419,7 +419,10 @@ enum CSVPrivacyParser {
 
     // MARK: - ShareableProfile
 
-    private static func makeShareableProfile(
+    // Internal (not private) so V11-03 can build a *combined* profile across
+    // every imported ledger's holdings for a whole-portfolio overview, reusing
+    // the exact sector-weighting / risk logic an import uses for one account.
+    static func makeShareableProfile(
         from holdings: [LedgerHolding],
         now: Date
     ) -> ShareableProfile {

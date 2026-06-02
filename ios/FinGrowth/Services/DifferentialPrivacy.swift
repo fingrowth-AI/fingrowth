@@ -224,8 +224,10 @@ enum DifferentialPrivacy {
         return array
     }
 
-    // Herfindahl-based: a concentrated book is low-diversification.
-    private static func diversificationLevel(_ categories: [String: Double]) -> String? {
+    // Herfindahl-based: a concentrated book is low-diversification. Internal (not
+    // private) so the V11-03 portfolio analysis reuses the exact same thresholds
+    // rather than duplicating them.
+    static func diversificationLevel(_ categories: [String: Double]) -> String? {
         let total = categories.values.reduce(0, +)
         guard total > 0 else { return nil }
         let hhi = categories.values.map { ($0 / total) * ($0 / total) }.reduce(0, +)
