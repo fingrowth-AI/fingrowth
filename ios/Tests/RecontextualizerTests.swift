@@ -26,12 +26,16 @@ final class RecontextualizerTests: XCTestCase {
         ledger([("AAPL", 500, 142), ("MSFT", 200, 380)])
     }
 
-    private func response(narrative: String, ticker: String = "AAPL") -> AnalysisResponse {
+    private func response(
+        narrative: String,
+        ticker: String = "AAPL",
+        technical: [String: JSONValue] = [:]
+    ) -> AnalysisResponse {
         AnalysisResponse(
             sessionId: UUID(),
             ticker: ticker,
             research: ResearchData(),
-            analysis: AnalysisData(technical: [:], narrative: narrative, confidence: "moderate"),
+            analysis: AnalysisData(technical: technical, narrative: narrative, confidence: "moderate"),
             riskReview: RiskReview(),
             disclaimer: "Research only."
         )
@@ -274,6 +278,162 @@ final class RecontextualizerTests: XCTestCase {
         // An inflated count must not satisfy the position fact.
         XCTAssertFalse(Recontextualizer.factsPreserved(
             ["500 shares of AAPL"], in: "You own 1500 shares of AAPL."))
+    }
+
+    // MARK: - V11-02: concentration and risk awareness
+
+    // AAPL = 500*142 = 71,000 of a 147,000 book ≈ 48% → "concentrated" (>30%).
+    private func overbought(_ ticker: String = "AAPL") -> AnalysisResponse {
+        response(narrative: "\(ticker) momentum looks elevated.", ticker: ticker, technical: ["rsi": .double(75)])
+    }
+
+    func testPositionInsightStatesPercentageOfPortfolio() {
+        // AC1: the result states position size as a percentage of the portfolio.
+        let insight = Recontextualizer.positionInsight(for: overbought(), holdings: techLedger().holdings)
+        XCTAssertNotNil(insight?.portfolioPercent)
+        XCTAssertEqual(insight?.portfolioPercent ?? 0, 48.3, accuracy: 0.5)
+        XCTAssertEqual(insight?.concentration, "concentrated")
+        let text = insight?.lines.joined(separator: " ") ?? ""
+        XCTAssertTrue(text.contains("48% of your portfolio"), "missing percentage in: \(text)")
+    }
+
+    func testConcentratedPositionAmplifiesSignal() {
+        // AC2: a concentrated stake makes the signal "carry more weight".
+        let insight = Recontextualizer.positionInsight(for: overbought(), holdings: techLedger().holdings)
+        let text = insight?.lines.joined(separator: " ") ?? ""
+        XCTAssertTrue(text.contains("overbought signal"), "signal not referenced: \(text)")
+        XCTAssertTrue(text.contains("carries more weight"), "concentration didn't amplify: \(text)")
+    }
+
+    func testSmallPositionDampensSignal() {
+        // AC2: the same overbought signal in a small position is framed as a
+        // smaller factor — honest weighting in the other direction.
+        // AAPL 1 share @ $100 vs a $99,900 NVDA stake → AAPL ≈ 0.1% (tiny).
+        let book = ledger([("AAPL", 1, 100), ("NVDA", 100, 999)]).holdings
+        let insight = Recontextualizer.positionInsight(for: overbought(), holdings: book)
+        XCTAssertEqual(insight?.concentration, "tiny")
+        let text = insight?.lines.joined(separator: " ") ?? ""
+        XCTAssertTrue(text.contains("is a smaller factor"), "small position didn't dampen: \(text)")
+    }
+
+    func testModeratePositionMakesNoAmplificationClaim() {
+        // A ~10% position states the percentage but makes no honest claim that
+        // the signal matters more or less — it just stands.
+        // AAPL 100 @ $100 = 10,000 of a 100,000 book → 10% (moderate).
+        let book = ledger([("AAPL", 100, 100), ("NVDA", 90, 1000)]).holdings
+        let insight = Recontextualizer.positionInsight(for: overbought(), holdings: book)
+        XCTAssertEqual(insight?.concentration, "moderate")
+        let text = insight?.lines.joined(separator: " ") ?? ""
+        XCTAssertTrue(text.contains("10% of your portfolio"), "missing percentage in: \(text)")
+        XCTAssertFalse(text.contains("carries more weight"))
+        XCTAssertFalse(text.contains("is a smaller factor"))
+    }
+
+    func testPercentageOmittedWhenPortfolioValueUnknown() {
+        // AC1 "when relevant": with no cost basis, the percentage can't be
+        // computed honestly, so it's omitted — but the V11-01 holding line stays.
+        let noBasis = ledger([("AAPL", 500, 0), ("MSFT", 200, 0)]).holdings
+        let insight = Recontextualizer.positionInsight(for: overbought(), holdings: noBasis)
+        XCTAssertNil(insight?.portfolioPercent)
+        XCTAssertNil(insight?.concentration)
+        XCTAssertEqual(insight?.lines.count, 1)
+        XCTAssertTrue(insight?.lines.first?.contains("500 shares of AAPL") ?? false)
+    }
+
+    func testConcentrationFramingIsNeverAdvice() {
+        // AC2: the framing must never read as a buy/sell/hold directive.
+        let insight = Recontextualizer.positionInsight(for: overbought(), holdings: techLedger().holdings)
+        for line in insight?.lines ?? [] {
+            XCTAssertFalse(Recontextualizer.containsAdvice(line), "advice leaked into: \(line)")
+        }
+    }
+
+    func testAdviceGuardRejectsRecommendationShapedPhrasing() {
+        // P1: rating-shaped prose that preserves the fact but reads as advice
+        // must be caught even though it uses no directive verb.
+        XCTAssertTrue(Recontextualizer.containsAdvice("You own 500 shares of AAPL, a strong buy."))
+        XCTAssertTrue(Recontextualizer.containsAdvice("You own 500 shares of AAPL — a buy."))
+        XCTAssertTrue(Recontextualizer.containsAdvice("AAPL is rated a sell by the street."))
+        XCTAssertTrue(Recontextualizer.containsAdvice("Analysts give it a buy rating."))
+        XCTAssertTrue(Recontextualizer.containsAdvice("Hold this position for the long term."))
+        XCTAssertTrue(Recontextualizer.containsAdvice("Hold onto your shares."))
+        XCTAssertTrue(Recontextualizer.containsAdvice("The stock is rated outperform."))
+        // The legitimate factual restatement must still NOT be flagged — the
+        // V11-01 holding line and the V11-02 concentration framing are safe.
+        XCTAssertFalse(Recontextualizer.containsAdvice(
+            "You own 500 shares of AAPL, so this analysis is about a position you hold."))
+        XCTAssertFalse(Recontextualizer.containsAdvice(
+            "Because AAPL is such a large share of your portfolio, this overbought signal "
+            + "carries more weight for you than it would in a smaller position."))
+        XCTAssertFalse(Recontextualizer.containsAdvice("You hold 500 shares of AAPL — a position you own."))
+    }
+
+    func testPercentageOmittedWhenAnyHoldingLacksCostBasis() {
+        // P3: a holding with missing/zero cost basis would silently understate
+        // the denominator and overstate the analyzed position's share, so the
+        // percentage is withheld entirely rather than asserting a misleading one.
+        let partialBasis = ledger([("AAPL", 500, 142), ("MSFT", 200, 0)]).holdings
+        let insight = Recontextualizer.positionInsight(for: overbought(), holdings: partialBasis)
+        XCTAssertNil(insight?.portfolioPercent, "an incomplete-basis book must not assert a percentage")
+        XCTAssertNil(insight?.concentration)
+        XCTAssertEqual(insight?.lines.count, 1)  // V11-01 holding line only
+        XCTAssertTrue(insight?.lines.first?.contains("500 shares of AAPL") ?? false)
+    }
+
+    func testNoSignalYieldsPercentageButNoWeighting() {
+        // Neutral / absent indicators → state the percentage, but no signal to weigh.
+        let resp = response(narrative: "AAPL traded sideways.", ticker: "AAPL", technical: ["rsi": .double(50)])
+        let insight = Recontextualizer.positionInsight(for: resp, holdings: techLedger().holdings)
+        let text = insight?.lines.joined(separator: " ") ?? ""
+        XCTAssertTrue(text.contains("of your portfolio"))
+        XCTAssertFalse(text.contains("signal"), "no signal should be weighed: \(text)")
+    }
+
+    func testSalientSignalPrefersRSIThenBollingerThenMACD() {
+        XCTAssertEqual(Recontextualizer.salientSignal(in: ["rsi": .double(72)]), "overbought")
+        XCTAssertEqual(Recontextualizer.salientSignal(in: ["rsi": .int(25)]), "oversold")
+        XCTAssertEqual(Recontextualizer.salientSignal(in: [
+            "latest_close": .double(110),
+            "bollinger": .object(["upper": .double(100), "lower": .double(80)]),
+        ]), "overextended")
+        XCTAssertEqual(Recontextualizer.salientSignal(in: [
+            "macd": .object(["histogram": .double(1.2)]),
+        ]), "bullish")
+        XCTAssertNil(Recontextualizer.salientSignal(in: ["rsi": .double(50)]))
+        XCTAssertNil(Recontextualizer.salientSignal(in: [:]))
+    }
+
+    func testFormatPercentRoundsAndFloorsSubOnePercent() {
+        XCTAssertEqual(Recontextualizer.formatPercent(48.3), "48%")
+        XCTAssertEqual(Recontextualizer.formatPercent(0.4), "less than 1%")
+        XCTAssertEqual(Recontextualizer.formatPercent(99.6), "100%")
+    }
+
+    func testExactPercentageNeverReachesTheCloud() async {
+        // AC3: computation is on-device (gemma=nil → zero network), and only a
+        // generalized *bucket* may go to the cloud — never the exact percentage.
+        let resp = overbought()
+        let enriched = await Recontextualizer(gemma: nil).enrich(
+            response: resp, holdings: techLedger().holdings
+        )
+        // The on-device insight carries the precise figure...
+        XCTAssertNotNil(enriched.positionInsight?.portfolioPercent)
+        // ...but the query-scoped context that would leave the device carries
+        // only a coarse bucket label, with no exact percent anywhere in it.
+        let profile = ShareableProfile(
+            totalValueBucket: "100k-250k",
+            sectorWeightsJSON: "{\"technology\":1.0}",
+            positionSizeBucketsJSON: "[\"concentrated\"]"
+        )
+        let scoped = DifferentialPrivacy.scopedContext(
+            query: "How is AAPL doing?",
+            ledger: techLedger(),
+            profile: profile,
+            privacyLevel: .moderate
+        )
+        let bucket = scoped.focus?.first?.positionSize
+        XCTAssertEqual(bucket, "concentrated")
+        XCTAssertFalse(bucket?.contains("%") ?? false, "an exact percent must not leave the device")
     }
 
     // MARK: - Zero network

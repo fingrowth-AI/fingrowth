@@ -39,11 +39,18 @@ struct PersonalizedContext: Equatable, Sendable {
 // analyzed ticker* (not by a cloud-narrative cue, the way PersonalizedContext
 // is). It references the user's real position in the analyzed stock, resolved
 // on-device from the PrivateLedger so the specifics never transit the network.
+//
+// V11-02 extends it with concentration awareness: how big the position is as a
+// share of the whole portfolio, and an honest weighing of the analysis's signal
+// by that concentration ("you are 32% in AAPL — this overbought signal matters
+// more given that concentration"). All of this is computed on-device from the
+// holdings; only a *generalized* bucket (DifferentialPrivacy.positionBucket via
+// FocusContext) ever reaches the cloud — the exact percentage never does.
 struct PositionInsight: Equatable, Sendable {
     static let title = "What this means for you"
 
     // One or more lines referencing the held position (deterministic floor; an
-    // optional on-device model may phrase them more fluently).
+    // optional on-device model may phrase the leading holding line more fluently).
     let lines: [String]
     // The analyzed ticker the user holds.
     let ticker: String
@@ -51,6 +58,14 @@ struct PositionInsight: Equatable, Sendable {
     let factPhrases: [String]
     // Provenance — resolved on-device, never transmitted.
     let note: String
+    // V11-02: the position's share of the whole portfolio by value, computed
+    // on-device. nil when portfolio value can't be derived (e.g. no cost basis),
+    // in which case no percentage is asserted ("when relevant"). The exact value
+    // stays on-device; only a generalized bucket may reach the cloud.
+    var portfolioPercent: Double? = nil
+    // V11-02: the concentration bucket for the position ("concentrated", "large",
+    // "moderate", "small", "tiny"), or nil when the percentage is unknown.
+    var concentration: String? = nil
 }
 
 struct EnrichedResponse: Equatable, Sendable {
@@ -124,24 +139,32 @@ struct Recontextualizer: Sendable {
     // MARK: - V11-01: position insight (owns the analyzed ticker)
 
     /// The "What this means for you" section, with an optional on-device Gemma
-    /// smoothing pass (accepted only if it preserves the share-count + ticker
-    /// fact *and* adds no advice). Deterministic floor; zero network.
+    /// smoothing pass over the *leading holding line only* (accepted only if it
+    /// preserves the share-count + ticker fact *and* adds no advice). The V11-02
+    /// concentration lines that follow are kept verbatim — they're deterministic
+    /// framing that must stay honest and advice-free, so we never paraphrase
+    /// them. Deterministic floor; zero network.
     func enrichedPosition(
         response: AnalysisResponse, holdings: [LedgerHolding]
     ) async -> PositionInsight? {
         guard let base = Self.positionInsight(for: response, holdings: holdings) else { return nil }
-        if let gemma, await gemma.usesRealModel, await gemma.isReady,
-           let prose = await modelSmooth(lines: base.lines, gemma: gemma),
-           Self.factsPreserved(base.factPhrases, in: prose),
-           !Self.containsAdvice(prose) {
-            return PositionInsight(
-                lines: [prose],
-                ticker: base.ticker,
-                factPhrases: base.factPhrases,
-                note: base.note
-            )
+        guard let gemma, await gemma.usesRealModel, await gemma.isReady,
+              let holdingLine = base.lines.first,
+              let prose = await modelSmooth(lines: [holdingLine], gemma: gemma),
+              Self.factsPreserved(base.factPhrases, in: prose),
+              !Self.containsAdvice(prose) else {
+            return base
         }
-        return base
+        var smoothed = base.lines
+        smoothed[0] = prose
+        return PositionInsight(
+            lines: smoothed,
+            ticker: base.ticker,
+            factPhrases: base.factPhrases,
+            note: base.note,
+            portfolioPercent: base.portfolioPercent,
+            concentration: base.concentration
+        )
     }
 
     static func positionInsight(
@@ -154,23 +177,127 @@ struct Recontextualizer: Sendable {
     /// nil (so the section is omitted gracefully). Pure and synchronous — the
     /// verifiable floor. Lots of the same ticker — across every passed-in
     /// holding — are aggregated into one figure (P2).
+    ///
+    /// V11-02: when the portfolio's value is derivable, append the position's
+    /// share of the whole book and weigh the analysis's signal by that
+    /// concentration — honest framing, never advice. The percentage is computed
+    /// on-device and stays here; only a generalized bucket reaches the cloud.
     static func positionInsight(
         for response: AnalysisResponse, holdings: [LedgerHolding]
     ) -> PositionInsight? {
         let ticker = response.ticker.uppercased()
         guard !ticker.isEmpty else { return nil }
-        let lots = holdings.filter { $0.ticker.uppercased() == ticker && $0.quantity > 0 }
+        let held = holdings.filter { $0.quantity > 0 }
+        let lots = held.filter { $0.ticker.uppercased() == ticker }
         guard !lots.isEmpty else { return nil }
 
         let shares = lots.reduce(0.0) { $0 + $1.quantity }
         let phrase = "\(formatShares(shares)) shares of \(ticker)"
-        let line = "You own \(phrase), so this analysis is about a position you hold."
+        // Leading holding line keeps the V11-01 form — it's the line the optional
+        // Gemma pass may smooth, and the share-count fact it asserts is preserved.
+        var lines = ["You own \(phrase), so this analysis is about a position you hold."]
+
+        // V11-02: position size as a percentage of the whole portfolio by value.
+        // Only derivable when we have cost basis for *every* held lot — a holding
+        // with missing/zero basis contributes 0 to the denominator, which would
+        // silently overstate the analyzed position's true share. When any basis
+        // is missing we omit the percentage rather than assert a misleading one.
+        let basisComplete = held.allSatisfy { $0.costBasis > 0 }
+        let totalValue = held.reduce(0.0) { $0 + value(of: $1) }
+        let positionValue = lots.reduce(0.0) { $0 + value(of: $1) }
+        var percent: Double?
+        var concentration: String?
+
+        if basisComplete, totalValue > 0, positionValue > 0 {
+            let pct = positionValue / totalValue * 100
+            percent = pct
+            let bucket = DifferentialPrivacy.positionBucket(forPercent: pct)
+            concentration = bucket
+            lines.append(
+                "That's about \(formatPercent(pct)) of your portfolio — \(positionDescriptor(for: bucket))."
+            )
+            // Weigh the analysis's strongest signal by concentration, when the
+            // size meaningfully changes how much that signal matters.
+            if let signal = salientSignal(in: response.analysis.technical),
+               let weighting = concentrationWeighting(ticker: ticker, signal: signal, bucket: bucket) {
+                lines.append(weighting)
+            }
+        }
+
         return PositionInsight(
-            lines: [line],
+            lines: lines,
             ticker: ticker,
             factPhrases: [phrase],
-            note: PersonalizedContext.onDeviceNote
+            note: PersonalizedContext.onDeviceNote,
+            portfolioPercent: percent,
+            concentration: concentration
         )
+    }
+
+    // MARK: - V11-02: concentration + signal weighing
+
+    /// The strongest plain-language signal the analyst's technical indicators
+    /// imply, or nil when they're all neutral / absent. Deterministic — no LLM
+    /// math (per CLAUDE.md) — and mirrors the thresholds IndicatorFormatter uses
+    /// for its UI tags so the framing never contradicts the indicator table.
+    /// RSI leads (the design's canonical example), then Bollinger, then MACD.
+    static func salientSignal(in technical: [String: JSONValue]) -> String? {
+        if let rsi = number(technical["rsi"]) {
+            if rsi >= 70 { return "overbought" }
+            if rsi <= 30 { return "oversold" }
+        }
+        if case .object(let bands)? = technical["bollinger"],
+           let close = number(technical["latest_close"]),
+           let upper = number(bands["upper"]),
+           let lower = number(bands["lower"]) {
+            if close > upper { return "overextended" }
+            if close < lower { return "depressed" }
+        }
+        if case .object(let macd)? = technical["macd"], let histogram = number(macd["histogram"]) {
+            if histogram > 0 { return "bullish" }
+            if histogram < 0 { return "bearish" }
+        }
+        return nil
+    }
+
+    /// Honest framing that scales the signal by how concentrated the position is.
+    /// A concentrated/large stake amplifies the signal's relevance; a tiny/small
+    /// one dampens it; a moderate stake gets no amplification claim (nil) so we
+    /// don't overstate. Never advice — only a statement of relative relevance.
+    static func concentrationWeighting(ticker: String, signal: String, bucket: String) -> String? {
+        switch bucket {
+        case "concentrated", "large":
+            let share = bucket == "concentrated" ? "such a large share" : "a sizable share"
+            return "Because \(ticker) is \(share) of your portfolio, this \(signal) signal "
+                + "carries more weight for you than it would in a smaller position."
+        case "small", "tiny":
+            let share = bucket == "tiny" ? "only a tiny share" : "only a small share"
+            return "Because \(ticker) is \(share) of your portfolio, this \(signal) signal "
+                + "is a smaller factor for you than it would be in a concentrated position."
+        default:
+            // "moderate" — no honest amplification either way; the percentage stands.
+            return nil
+        }
+    }
+
+    // Human label for a position-size bucket, used in the percentage line.
+    private static func positionDescriptor(for bucket: String) -> String {
+        switch bucket {
+        case "concentrated": return "a concentrated position"
+        case "large": return "a large position"
+        case "moderate": return "a moderate position"
+        case "small": return "a small position"
+        case "tiny": return "a tiny position"
+        default: return "a position"
+        }
+    }
+
+    private static func number(_ value: JSONValue?) -> Double? {
+        switch value {
+        case .double(let d): return d
+        case .int(let i): return Double(i)
+        default: return nil
+        }
     }
 
     // MARK: - Deterministic core
@@ -291,6 +418,19 @@ struct Recontextualizer: Sendable {
         makeRegex(#"\b(?:it'?s\s+)?time\s+to\s+(?:buy|sell|short|exit)\b"#),
         makeRegex(#"\b(?:take\s+profits?|cut\s+(?:your\s+)?losses)\b"#),
         makeRegex(#"\b(?:reduce|trim|increase|lighten|boost)\s+(?:your\s+)?(?:exposure|position|holdings?|stake)\b"#),
+        // Recommendation-*shaped* phrasing that uses no directive verb but still
+        // reads as advice: analyst-style ratings ("a strong buy", "rated a sell",
+        // "buy rating", "outperform") and "hold this position" imperatives. These
+        // would otherwise preserve the share-count fact and slip past the guard.
+        // Note "a position you hold" / "you own" are NOT matched — the hold rule
+        // requires hold to *precede* this/the/your/onto + the noun.
+        makeRegex(#"\b(?:a|an|its)\s+strong\s+(?:buy|sell)\b"#),
+        makeRegex(#"\bstrong\s+(?:buy|sell)\b"#),
+        makeRegex(#"\b(?:a|an)\s+(?:buy|sell)\b"#),
+        makeRegex(#"\b(?:buy|sell|hold)\s+rating\b"#),
+        makeRegex(#"\brated\s+(?:a\s+)?(?:strong\s+)?(?:buy|sell|hold|outperform|underperform|overweight|underweight)\b"#),
+        makeRegex(#"\bhold\s+(?:on\s+to\s+|onto\s+)?(?:this\s+|the\s+|your\s+)?(?:position|stock|shares?|holding)\b"#),
+        makeRegex(#"\b(?:outperform|underperform)\b"#),
     ]
 
     static func containsAdvice(_ text: String) -> Bool {
@@ -370,6 +510,13 @@ struct Recontextualizer: Sendable {
         }
         // Trim trailing zeros for fractional share counts (e.g. 12.50 → 12.5).
         return String(format: "%g", quantity)
+    }
+
+    // Position size as a readable percentage. Rounds to a whole percent — the
+    // figure is contextual framing, not a number to act on — and floors sub-1%
+    // stakes to "less than 1%" rather than printing a misleading "0%".
+    static func formatPercent(_ percent: Double) -> String {
+        percent < 1 ? "less than 1%" : "\(Int(percent.rounded()))%"
     }
 
     // MARK: - Gemma smoothing (real model only)

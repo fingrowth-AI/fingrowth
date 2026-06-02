@@ -198,6 +198,28 @@ final class DifferentialPrivacyTests: XCTestCase {
         XCTAssertEqual(ctx.focus?.first?.positionSize, "concentrated")
     }
 
+    func testScopedContextScopesConcentrationAcrossAllLedgers() {
+        // P2: the concentration the cloud sees must reflect the same book the
+        // on-device "What this means for you" card uses — holdings from *every*
+        // imported ledger — not just the newest account, so the two can't disagree.
+        let newest = [LedgerHolding(ticker: "TSLA", quantity: 50, costBasis: 200)]  // $10k
+        let older = [LedgerHolding(ticker: "SPY", quantity: 200, costBasis: 400)]   // $80k, older account
+        let query = "How is TSLA doing?"
+
+        // Newest account alone → TSLA looks like the entire book (concentrated).
+        let newestOnly = DifferentialPrivacy.scopedContext(
+            query: query, holdings: newest, profile: techAndBondsProfile(), privacyLevel: .moderate
+        )
+        XCTAssertEqual(newestOnly.focus?.first?.positionSize, "concentrated")
+
+        // Across all ledgers → TSLA is ~11% of the combined $90k book (moderate).
+        let combined = DifferentialPrivacy.scopedContext(
+            query: query, holdings: newest + older, profile: techAndBondsProfile(), privacyLevel: .moderate
+        )
+        XCTAssertEqual(combined.focus?.first?.ticker, "TSLA")
+        XCTAssertEqual(combined.focus?.first?.positionSize, "moderate")
+    }
+
     func testFocusedTickersMatchesHeldWholeWordOnly() {
         let held = [
             LedgerHolding(ticker: "TSLA", quantity: 1, costBasis: 1),

@@ -114,7 +114,27 @@ enum DifferentialPrivacy {
         profile: ShareableProfile,
         privacyLevel: PortfolioPrivacyLevel
     ) -> GeneralizedProfile {
-        let holdings = (ledger?.holdings ?? []).filter { $0.quantity > 0 }
+        scopedContext(
+            query: query,
+            holdings: ledger?.holdings ?? [],
+            profile: profile,
+            privacyLevel: privacyLevel
+        )
+    }
+
+    // V11-02 (P2): scope against an explicit holdings set so the caller can pass
+    // holdings aggregated across *every* imported ledger. The concentration the
+    // cloud sees (the focus position-size bucket) is then computed over the same
+    // book as the on-device "What this means for you" card, instead of only the
+    // newest account — keeping the two from disagreeing. Still emits only tier-2
+    // generalities (ticker + sector + size bucket); no identity, no exact value.
+    static func scopedContext(
+        query: String,
+        holdings allHoldings: [LedgerHolding],
+        profile: ShareableProfile,
+        privacyLevel: PortfolioPrivacyLevel
+    ) -> GeneralizedProfile {
+        let holdings = allHoldings.filter { $0.quantity > 0 }
         let focusTickers = focusedTickers(in: query, held: holdings)
 
         // No specific holding in question → portfolio-level context as before.

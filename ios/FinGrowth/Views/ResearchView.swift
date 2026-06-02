@@ -587,6 +587,11 @@ struct ResearchView: View {
         let ledger = ledgers.first
         let profile = profiles.first
         let privacyLevel = settings.portfolioPrivacyLevel
+        // V11-02 (P2): the concentration context sent to the cloud is scoped over
+        // holdings from *every* imported ledger — the same book the on-device
+        // "What this means for you" card uses (see recontextualize) — so the two
+        // never disagree across multiple accounts. Only generalized buckets leave.
+        let allHoldings = ledgers.flatMap { $0.holdings }
 
         // Intent routing (P5-07): classify the query first, then run the
         // pipeline the intent calls for. localOnly never contacts the cloud;
@@ -632,7 +637,7 @@ struct ResearchView: View {
             // context; a portfolio-level question sends sector weights.
             let generalized: GeneralizedProfile? = (intent == .hybrid && profile != nil)
                 ? DifferentialPrivacy.scopedContext(
-                    query: rawQuery, ledger: ledger, profile: profile!, privacyLevel: privacyLevel
+                    query: rawQuery, holdings: allHoldings, profile: profile!, privacyLevel: privacyLevel
                 )
                 : nil
 
