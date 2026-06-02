@@ -501,7 +501,7 @@ async def test_rejected_narrative_replaced_by_safe_default_in_final_result(
     default rather than passed through unchanged.
     """
 
-    def _violating_narrate(ticker, indicators, packet, portfolio_profile=None):
+    def _violating_narrate(ticker, indicators, packet, portfolio_profile=None, prior_analyses=None):
         # Triggers buy_sell_recommendation + future_price_claim flags, which
         # are both rejection codes.
         return (

@@ -37,6 +37,7 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
+from app.agents.analyst import _prior_context_sentence
 from app.agents.graph import agent_graph
 from app.auth import CurrentUser
 from app.models.risk import STANDARD_DISCLAIMER
@@ -48,10 +49,96 @@ from app.models.schemas import (
     ResearchData,
     RiskReview,
 )
+from app.services.analysis_memory import AnalysisMemory, past_analysis_payload
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
+
+# V12-06: conversation-continuity memory. Injected (set_pipeline_memory) so it's
+# off by default — tests and any deployment without pgvector/embeddings simply
+# skip recall/remember. main.py wires the real one at startup. All memory calls
+# are best-effort: a memory hiccup must never break the analysis stream.
+_PIPELINE_MEMORY: AnalysisMemory | None = None
+# How many prior analyses to surface as follow-up context.
+_RECALL_TOP_K = 3
+# Cosine-similarity floor for surfacing a prior analysis (V12-06 "when
+# relevant"): top-K alone would inject a stale, unrelated AAPL memory into a
+# later NVDA question. Only sufficiently-similar recalls inform the response.
+_MIN_RECALL_SIMILARITY = 0.6
+
+
+def set_pipeline_memory(memory: AnalysisMemory | None) -> None:
+    """Configure (or disable, with None) the conversation-continuity memory."""
+    global _PIPELINE_MEMORY
+    _PIPELINE_MEMORY = memory
+
+
+def get_pipeline_memory() -> AnalysisMemory | None:
+    return _PIPELINE_MEMORY
+
+
+async def _recall_prior(query: str, user_id: uuid.UUID) -> list[dict[str, Any]]:
+    """The user's relevant prior analyses as graph-state payloads (best-effort).
+
+    Scoped to ``user_id`` by ConversationMemory.find_similar (V7-04). Any failure
+    (no memory configured, embedder/DB unavailable) degrades to no context.
+    """
+    memory = get_pipeline_memory()
+    if memory is None:
+        return []
+    try:
+        recalled = await memory.recall(query=query, user_id=user_id, top_k=_RECALL_TOP_K)
+        # "when relevant": drop weak matches so an unrelated past analysis never
+        # gets framed as context for this question.
+        return [
+            past_analysis_payload(item)
+            for item in recalled
+            if item.similarity >= _MIN_RECALL_SIMILARITY
+        ]
+    except Exception:
+        logger.exception("conversation memory recall failed; continuing without prior context")
+        return []
+
+
+async def _remember(
+    body: AnalysisQuery,
+    session_id: uuid.UUID,
+    user_id: uuid.UUID,
+    response: AnalysisResponse,
+    final_state: dict[str, Any],
+) -> None:
+    """Persist this analysis so future follow-ups can recall it (best-effort)."""
+    memory = get_pipeline_memory()
+    if memory is None:
+        return
+    try:
+        result_payload = {
+            "ticker": response.ticker,
+            "research_data": final_state.get("research") or {},
+            "technical_indicators": (final_state.get("analysis") or {}).get(
+                "technical_indicators"
+            )
+            or {},
+            "narrative": response.analysis.narrative,
+            "risk_flags": final_state.get("risk_review") or {},
+            "confidence": response.analysis.confidence,
+        }
+        await memory.remember(
+            session_id=session_id,
+            user_id=user_id,
+            query=body.query,
+            ticker=response.ticker,
+            analysis_type=body.analysis_type,
+            portfolio_context=(
+                body.portfolio_profile.model_dump()
+                if body.portfolio_profile is not None
+                else None
+            ),
+            result=result_payload,
+        )
+    except Exception:
+        logger.exception("conversation memory store failed; analysis result not indexed")
 
 # Internal route names emitted by the Router node, mapped to the next progress
 # stage. Kept here (not imported from agents.graph) so the SSE contract is
@@ -218,6 +305,10 @@ async def _run_pipeline(
     state so per-user persistence (V8/V12-06) can attribute work to its owner.
     """
     ticker = body.ticker.upper()
+    # V12-06: recall the user's relevant prior analyses *before* the graph runs
+    # so the Analyst can fold them into the narrative. Scoped to this user;
+    # best-effort, so an empty/unavailable memory just means no prior context.
+    prior_analyses = await _recall_prior(body.query, user_id)
     initial_state: dict[str, Any] = {
         "query": body.query,
         "ticker": ticker,
@@ -227,6 +318,7 @@ async def _run_pipeline(
             if body.portfolio_profile is not None
             else None
         ),
+        "prior_analyses": prior_analyses,
         "session_id": str(session_id),
         "user_id": str(user_id),
     }
@@ -266,6 +358,18 @@ async def _run_pipeline(
                     yield _sse_event("progress", {"stage": "reviewing"})
 
         response = _build_response(session_id, ticker, final_state)
+        # V12-06: index this analysis so future follow-ups can recall it. Stored
+        # before the prior-context line is appended, so memory keeps the base
+        # narrative rather than re-embedding recalled context.
+        await _remember(body, session_id, user_id, response, final_state)
+        # The Analyst renders prior context itself; the general route skips the
+        # Analyst, so surface the recalled context here instead — otherwise a
+        # general follow-up would recall memory but never show it.
+        if final_state.get("route") not in _ROUTES_WITH_ANALYST and prior_analyses:
+            sentence = _prior_context_sentence(prior_analyses)
+            if sentence:
+                base = response.analysis.narrative
+                response.analysis.narrative = f"{base} {sentence}".strip() if base else sentence
         yield _sse_event("final_result", response.model_dump(mode="json"))
     except Exception as exc:
         logger.exception("analysis pipeline failed")

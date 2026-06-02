@@ -47,6 +47,10 @@ class AgentState(TypedDict, total=False):
     ticker: str
     analysis_type: str
     portfolio_profile: dict[str, Any] | None
+    # V12-06: the user's recalled prior analyses (PII-free narrative summaries),
+    # declared so LangGraph threads them to the Analyst — undeclared keys are
+    # dropped. Empty when memory is off or nothing relevant was recalled.
+    prior_analyses: list[dict[str, Any]]
     session_id: str
     # Owner of the request (V7-05). Declared so LangGraph threads it through the
     # typed state — undeclared keys are dropped — letting V8 persistence nodes

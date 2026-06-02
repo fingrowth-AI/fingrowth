@@ -12,6 +12,15 @@ async def lifespan(app: FastAPI):
     # V8-05: wire the per-user quota counter to Redis when reachable (it falls
     # back to an in-memory counter otherwise — see app.services.api_quota).
     await api_quota.startup()
+    # V12-06: wire conversation-continuity memory so follow-ups recall the
+    # user's prior analyses. Best-effort — if construction fails the pipeline
+    # simply runs without prior context.
+    try:
+        from app.services.analysis_memory import build_default_memory
+
+        analysis.set_pipeline_memory(build_default_memory())
+    except Exception:  # pragma: no cover - defensive startup guard
+        pass
     yield
     await api_quota.shutdown()
 
