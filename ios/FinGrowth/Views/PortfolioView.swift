@@ -1262,7 +1262,9 @@ private struct PaperTradeOrderSheet: View {
 
 // MARK: - Linked analysis sheet
 
-private struct LinkedAnalysisSheet: View {
+// Internal (not private) so the Research tab can present it for the reverse
+// link (V12-03): from an analysis, open the trade it inspired.
+struct LinkedAnalysisSheet: View {
     let trade: PaperTradeRecord
     let modelContext: ModelContext
 
@@ -1342,12 +1344,7 @@ private struct LinkedAnalysisSheet: View {
     }
 
     private func resolveEntry() {
-        guard let sessionID = trade.sourceResearchSessionID else { return }
-        var descriptor = FetchDescriptor<ResearchHistoryEntry>(
-            predicate: #Predicate { $0.sessionID == sessionID }
-        )
-        descriptor.fetchLimit = 1
-        linkedEntry = (try? modelContext.fetch(descriptor))?.first
+        linkedEntry = AnalysisTradeLink.linkedEntry(for: trade, in: modelContext)
     }
 
     private func formatQty(_ qty: Double) -> String {

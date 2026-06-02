@@ -20,6 +20,10 @@ struct ResearchView: View {
     private var ledgers: [PrivateLedger]
     @Query(sort: \ShareableProfile.generatedAt, order: .reverse)
     private var profiles: [ShareableProfile]
+    // V12-03: paper trades, observed so the *live* result card shows the trades
+    // it inspired the moment they're placed (not only via persisted history).
+    @Query(sort: \PaperTradeRecord.submittedAt, order: .reverse)
+    private var paperTrades: [PaperTradeRecord]
 
     @State private var controller: AnalysisStreamController?
     // In-flight intent routing for the current Run. Stored so a second tap (or
@@ -57,6 +61,8 @@ struct ResearchView: View {
     // overall risk). Computed on-device from the generalized profile for a
     // whole-portfolio question; nil for a single-ticker query.
     @State private var portfolioAnalysis: PortfolioAnalysis?
+    // V12-03: a linked trade opened from the current result card.
+    @State private var selectedLinkedTrade: PaperTradeRecord?
     @Environment(\.colorScheme) private var colorScheme
 
     // Wire names mirror backend/app/routers/analysis.py — progress frames emit
@@ -116,6 +122,10 @@ struct ResearchView: View {
                     )
                     selectedHistoryEntry = nil
                 }
+            }
+            // V12-03: open a trade linked from the live result card.
+            .sheet(item: $selectedLinkedTrade) { trade in
+                LinkedAnalysisSheet(trade: trade, modelContext: modelContext)
             }
         }
     }
@@ -252,6 +262,13 @@ struct ResearchView: View {
                 .stroke(FinTheme.border(for: colorScheme), lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    // V12-03: trades placed from the currently displayed result, keyed on the
+    // persisted history entry's session ID (what enqueuePaperTrade links to).
+    private var linkedTradesForCurrentResult: [PaperTradeRecord] {
+        guard let sessionID = lastPersistedSessionLinkID else { return [] }
+        return paperTrades.filter { $0.sourceResearchSessionID == sessionID }
     }
 
     private var canSubmit: Bool {
@@ -415,6 +432,18 @@ struct ResearchView: View {
 
                 if let enrichedContext {
                     personalizedContextSection(enrichedContext)
+                }
+
+                // V12-03: the reverse link on the *live* result — any trade
+                // placed from this analysis shows here immediately (the @Query
+                // updates), so the bidirectional link doesn't wait on history.
+                let linkedTrades = linkedTradesForCurrentResult
+                if !linkedTrades.isEmpty {
+                    Card(title: "Paper trades from this analysis") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            LinkedTradesList(trades: linkedTrades) { selectedLinkedTrade = $0 }
+                        }
+                    }
                 }
 
                 Text(final.disclaimer)
@@ -988,6 +1017,12 @@ private struct HistoryDetailSheet: View {
     let entry: ResearchHistoryEntry
     let onTestPaperTrade: (String) -> Void
 
+    @Environment(\.modelContext) private var modelContext
+    // V12-03: paper trades placed from this analysis, resolved from the store so
+    // the reverse link survives restarts.
+    @State private var linkedTrades: [PaperTradeRecord] = []
+    @State private var selectedTrade: PaperTradeRecord?
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -1016,6 +1051,7 @@ private struct HistoryDetailSheet: View {
                             }
                         }
                     }
+                    linkedTradesSection
                     Text(entry.disclaimer)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -1029,6 +1065,57 @@ private struct HistoryDetailSheet: View {
                     Button("Paper trade") { onTestPaperTrade(entry.ticker) }
                 }
             }
+            .onAppear {
+                linkedTrades = AnalysisTradeLink.linkedTrades(forSessionID: entry.sessionID, in: modelContext)
+            }
+            .sheet(item: $selectedTrade) { trade in
+                LinkedAnalysisSheet(trade: trade, modelContext: modelContext)
+            }
         }
+    }
+
+    // V12-03 (AC2): an analysis that led to a trade links to that trade; tapping
+    // it opens the trade (and, from there, back to this analysis).
+    @ViewBuilder
+    private var linkedTradesSection: some View {
+        if !linkedTrades.isEmpty {
+            Divider()
+            Text("Paper trades from this analysis").font(.headline)
+            LinkedTradesList(trades: linkedTrades) { selectedTrade = $0 }
+        }
+    }
+}
+
+// V12-03: shared list of trades linked to an analysis, used by both the live
+// result card and the persisted history detail. Tapping a row opens the trade.
+private struct LinkedTradesList: View {
+    let trades: [PaperTradeRecord]
+    let onTap: (PaperTradeRecord) -> Void
+
+    var body: some View {
+        ForEach(trades) { trade in
+            Button { onTap(trade) } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(trade.side.uppercased()) \(formatQty(trade.qty)) · \(trade.status)")
+                            .font(.subheadline)
+                        Text(trade.submittedAt, style: .date)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func formatQty(_ qty: Double) -> String {
+        qty.truncatingRemainder(dividingBy: 1) == 0
+            ? String(Int(qty))
+            : String(format: "%.2f", qty)
     }
 }
