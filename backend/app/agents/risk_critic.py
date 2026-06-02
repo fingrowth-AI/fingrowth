@@ -36,9 +36,16 @@ from app.models.risk import (
 _FUTURE_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bprice\s+targets?\b", re.IGNORECASE),
     re.compile(r"\b\d{1,2}-?\s*month\s+target\b", re.IGNORECASE),
+    # V10-04: any forward-looking projection of a numeric level — hedged or not,
+    # "$"-prefixed or bare — is a forward claim and is rejected. The analyst only
+    # ever describes the *present* ("RSI is 79.87"), never projects a value to a
+    # future level, so this can't false-flag a genuine interpretation. Covers
+    # "may reach 300", "could trade at $300", "is going to hit $250", etc.
     re.compile(
-        r"\b(?:will|expect(?:s|ed)?\s+to|going\s+to|forecast(?:s|ed)?\s+to)\s+"
-        r"(?:reach|hit|rise\s+to|climb\s+to|drop\s+to|fall\s+to|go\s+to)"
+        r"\b(?:will|going\s+to|expect(?:s|ed)?\s+to|forecast(?:s|ed)?\s+to|"
+        r"could|may|might|should|likely\s+to|poised\s+to|set\s+to|on\s+track\s+to)\s+"
+        r"(?:reach|hit|rise\s+to|climb\s+to|drop\s+to|fall\s+to|go\s+to|"
+        r"trade\s+at|trading\s+at|be\s+worth|be\s+valued\s+at|change\s+hands\s+at)"
         r"\s+\$?\d",
         re.IGNORECASE,
     ),
@@ -65,7 +72,37 @@ _BUY_SELL_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:buy|sell|short|hold|strong\s+(?:buy|sell))\b",
         re.IGNORECASE,
     ),
-    re.compile(r"\byou\s+should\s+(?:buy|sell|short)\b", re.IGNORECASE),
+    # V10-04: directive aimed at any investor subject, not just "you" — richer
+    # narratives drift into "investors should sell" / "one should exit".
+    re.compile(
+        r"\b(?:investors?|traders?|shareholders?|you|we|one|people)\s+should\s+"
+        r"(?:buy|sell|short|exit|avoid|dump|hold|get\s+out)\b",
+        re.IGNORECASE,
+    ),
+    # V10-04: portfolio-action directives ("reduce exposure", "trim your position").
+    re.compile(
+        r"\b(?:reduce|trim|increase|lighten|boost|add\s+to)\s+(?:your\s+)?"
+        r"(?:exposure|position|holdings?|stake|allocation)\b",
+        re.IGNORECASE,
+    ),
+    # V10-04: soft directives still nudge an action ("consider selling",
+    # "it's time to buy") — honest framing ("consider the trend") is unaffected
+    # because the verb must be a trade action.
+    re.compile(r"\bconsider\s+(?:buying|selling|shorting|exiting)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:it'?s\s+)?time\s+to\s+(?:buy|sell|short|exit|get\s+out)\b",
+        re.IGNORECASE,
+    ),
+    # V10-04: a standalone rating ("this is a strong buy", "rated a sell").
+    re.compile(
+        r"\b(?:is|are|rated|remains?)\s+a\s+(?:strong\s+|clear\s+)?(?:buy|sell)\b",
+        re.IGNORECASE,
+    ),
+    # V10-04: explicit position-action directives.
+    re.compile(
+        r"\b(?:take\s+profits?|cut\s+(?:your\s+)?losses|lock\s+in\s+(?:gains|profits))\b",
+        re.IGNORECASE,
+    ),
 )
 
 _EXCESSIVE_CONFIDENCE_PATTERNS: tuple[re.Pattern[str], ...] = (

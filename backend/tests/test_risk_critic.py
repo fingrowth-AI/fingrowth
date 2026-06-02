@@ -348,6 +348,137 @@ def test_unsupported_numeric_present_alongside_compliance_violation():
 
 
 # ---------------------------------------------------------------------------
+# V10-04: tightened for richer interpretation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "narrative",
+    [
+        "The signals suggest caution given the elevated momentum.",
+        "The technical picture leans bearish, and caution may be warranted.",
+        "Momentum appears to be weakening, which suggests a cautious stance.",
+        "RSI suggests the stock may be overbought, so a careful read is warranted.",
+        "Conflicting signals could indicate consolidation rather than a clear trend.",
+    ],
+)
+def test_honest_hedged_interpretation_passes(narrative: str):
+    """AC1: honest, hedged interpretation passes review (approved, no rejection)."""
+    review = critique(_report(narrative))
+    assert review.approved is True
+    assert not any(f.code in {
+        "future_price_claim", "buy_sell_recommendation", "excessive_confidence"
+    } for f in review.flags)
+    assert review.disclaimer == STANDARD_DISCLAIMER
+
+
+@pytest.mark.parametrize(
+    "narrative",
+    [
+        "Consider selling this position before earnings.",
+        "It's time to buy this stock.",
+        "Investors should sell ahead of the report.",
+        "One should exit given the trend.",
+        "This is a strong buy on the momentum.",
+        "The setup is a clear sell here.",
+        "Take profits now while the RSI is elevated.",
+        "Cut your losses on this name.",
+    ],
+)
+def test_directive_language_is_flagged_and_rejected(narrative: str):
+    """AC2: directive buy/sell language is flagged and rejected with a safe default."""
+    review = critique(_report(narrative))
+    assert review.approved is False
+    assert any(f.code == "buy_sell_recommendation" for f in review.flags)
+    assert "cannot share this analysis" in review.modified_response.lower()
+    assert review.disclaimer == STANDARD_DISCLAIMER
+
+
+@pytest.mark.parametrize(
+    "narrative",
+    [
+        "The stock could reach $300 next quarter on this momentum.",
+        "Shares are likely to fall to $90 if support breaks.",
+        "It may climb to $250 given the MACD crossover.",
+        "The price is poised to hit $500 soon.",
+    ],
+)
+def test_hedged_future_price_predictions_are_rejected(narrative: str):
+    """AC3: a future-price prediction — even hedged — is rejected and replaced."""
+    review = critique(_report(narrative))
+    assert review.approved is False
+    assert any(f.code == "future_price_claim" for f in review.flags)
+    assert review.modified_response != narrative
+    assert "cannot share this analysis" in review.modified_response.lower()
+    assert review.disclaimer == STANDARD_DISCLAIMER
+
+
+def test_present_tense_indicator_statement_is_not_a_forward_claim():
+    """A present-tense indicator read (no projection) is honest interpretation and
+    passes — the AC1/AC3 line is *projection*, not the mere presence of a level."""
+    review = critique(
+        _report("RSI(14) at 55.12 is overbought-adjacent; momentum may be cooling.")
+    )
+    assert review.approved is True
+    assert not any(f.code == "future_price_claim" for f in review.flags)
+
+
+@pytest.mark.parametrize(
+    "narrative",
+    [
+        "The stock may reach 300 next quarter.",          # P1: bare-integer price
+        "Shares could trade at $300 by year end.",        # P1: "trade at"
+        "It is likely to climb to 350 soon.",             # hedged, bare
+        "The price should be worth $500 within a year.",  # "be worth"
+    ],
+)
+def test_future_price_prediction_common_wording_is_rejected(narrative: str):
+    """P1 / AC3: common future-price wording — hedged, bare-integer, or 'trade at'
+    — is rejected, not just advisory-flagged."""
+    review = critique(_report(narrative))
+    assert review.approved is False
+    assert any(f.code == "future_price_claim" for f in review.flags)
+    assert "cannot share this analysis" in review.modified_response.lower()
+    assert review.disclaimer == STANDARD_DISCLAIMER
+
+
+@pytest.mark.parametrize(
+    "narrative",
+    [
+        "You should get out before earnings.",
+        "Investors should get out of this name.",
+        "Reduce exposure to this stock now.",
+        "Trim your position ahead of the print.",
+    ],
+)
+def test_sell_equivalent_directives_are_rejected(narrative: str):
+    """P2 / AC2: sell-equivalent directives ('get out', 'reduce exposure') reject."""
+    review = critique(_report(narrative))
+    assert review.approved is False
+    assert any(f.code == "buy_sell_recommendation" for f in review.flags)
+    assert review.disclaimer == STANDARD_DISCLAIMER
+
+
+def test_v10_01_style_interpretive_narrative_still_passes():
+    """Regression: a rich, conflict-noting interpretation like the analyst now
+    produces is not falsely rejected by the tightened critic."""
+    # Values match _full_indicators() and hedging is present, so no advisory
+    # flags fire either — the tightened critic leaves a genuine interpretation
+    # completely untouched.
+    narrative = (
+        "RSI(14) at 55.12 sits in neutral territory and suggests balanced "
+        "momentum. MACD line 0.5432 is above its signal 0.4321 (histogram "
+        "0.1111), which may point to mild upward momentum. The latest close "
+        "103.21 is above its 20-day average (SMA(20) 102.34). These describe "
+        "current conditions and may change; this is not a recommendation."
+    )
+    review = critique(_report(narrative))
+    assert review.approved is True
+    assert review.flags == []
+    assert review.modified_response == narrative
+
+
+# ---------------------------------------------------------------------------
 # Graph node integration
 # ---------------------------------------------------------------------------
 
