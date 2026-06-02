@@ -424,7 +424,12 @@ private struct OrdersSection: View {
     let onTapAnalysis: (PaperTradeRecord) -> Void
 
     var body: some View {
-        List {
+        // V12-02: deterministic thesis outcomes from realized round trips, and
+        // the running hit-rate across them.
+        let outcomes = ThesisOutcomeEngine.outcomesByOpeningOrderID(from: paperTrades)
+        let hitRate = ThesisOutcomeEngine.hitRate(ThesisOutcomeEngine.closedTheses(from: paperTrades))
+
+        return List {
             if paperTrades.isEmpty && store.orders.isEmpty {
                 Section {
                     Text(emptyMessage)
@@ -435,9 +440,12 @@ private struct OrdersSection: View {
 
             if !paperTrades.isEmpty {
                 Section("Placed in app") {
+                    // Always shown once any trade exists; reads "No closed theses
+                    // yet" until a round trip completes (V12-02).
+                    ThesisHitRateRow(hitRate: hitRate)
                     ForEach(paperTrades) { trade in
                         Button { onTapAnalysis(trade) } label: {
-                            PaperTradeRow(trade: trade)
+                            PaperTradeRow(trade: trade, outcome: outcomes[trade.brokerOrderID])
                         }
                         .buttonStyle(.plain)
                     }
@@ -467,11 +475,16 @@ private struct OrdersSection: View {
 
 private struct PaperTradeRow: View {
     let trade: PaperTradeRecord
+    // V12-02: set when this trade's thesis has been closed out as a round trip.
+    var outcome: ThesisOutcome?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(trade.ticker).font(.subheadline.weight(.semibold))
+                if let outcome {
+                    ThesisOutcomeBadge(outcome: outcome)
+                }
                 Spacer()
                 Text(trade.submittedAt, style: .date)
                     .font(.caption2)
@@ -496,6 +509,42 @@ private struct PaperTradeRow: View {
         trade.qty.truncatingRemainder(dividingBy: 1) == 0
             ? String(Int(trade.qty))
             : String(format: "%.2f", trade.qty)
+    }
+}
+
+// V12-02: a deterministic confirmed / not-confirmed chip for a closed thesis.
+private struct ThesisOutcomeBadge: View {
+    let outcome: ThesisOutcome
+
+    var body: some View {
+        let confirmed = outcome == .confirmed
+        Label(outcome.label, systemImage: confirmed ? "checkmark.seal.fill" : "xmark.seal")
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background((confirmed ? FinTheme.accent : FinTheme.danger).opacity(0.15))
+            .foregroundStyle(confirmed ? FinTheme.accent : FinTheme.danger)
+            .clipShape(Capsule())
+    }
+}
+
+// V12-02: running hit-rate across the user's closed theses.
+private struct ThesisHitRateRow: View {
+    let hitRate: ThesisHitRate
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "target")
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Thesis hit-rate")
+                    .font(.caption.weight(.semibold))
+                Text(hitRate.display)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 
