@@ -3,7 +3,7 @@ import SwiftData
 
 enum AppContainer {
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV6.self)
+        Schema(versionedSchema: AppSchemaV7.self)
     }
 
     static func makeContainer(storeURL: URL? = nil) throws -> ModelContainer {

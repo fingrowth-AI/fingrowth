@@ -105,9 +105,18 @@ final class PortfolioStore {
         ticker: String,
         qty: Double,
         side: String,
+        thesis: String,
         source: PaperTradePrefill.Pending? = nil
     ) async -> BrokerOrder? {
         submitError = nil
+        // V12-01: the thesis requirement is enforced here — the real
+        // order-placement chokepoint — not just in the order form, so a direct
+        // caller can't place a backend order without a rationale. No network
+        // call is made until a non-blank thesis is present.
+        guard PaperOrderForm.hasThesis(thesis) else {
+            submitError = "A thesis is required before placing a paper trade."
+            return nil
+        }
         do {
             let order = try await client.placeOrder(
                 PlacePaperOrderRequest(
@@ -116,7 +125,7 @@ final class PortfolioStore {
                     side: side
                 )
             )
-            persistLocalRecord(order: order, source: source)
+            persistLocalRecord(order: order, thesis: thesis, source: source)
             // Refresh in the background — fire and forget so the caller's UI
             // isn't blocked on Alpaca's order propagation delay.
             Task { await self.refresh() }
@@ -130,7 +139,11 @@ final class PortfolioStore {
         }
     }
 
-    private func persistLocalRecord(order: BrokerOrder, source: PaperTradePrefill.Pending?) {
+    private func persistLocalRecord(
+        order: BrokerOrder,
+        thesis: String,
+        source: PaperTradePrefill.Pending?
+    ) {
         let record = PaperTradeRecord(
             brokerOrderID: order.id,
             ticker: order.symbol,
@@ -143,7 +156,8 @@ final class PortfolioStore {
             sourceQuery: source?.sourceQuery ?? "",
             sourceAnalysisType: source?.sourceAnalysisType ?? .general,
             sourceConfidence: source?.sourceConfidence ?? "",
-            sourceResearchSessionID: source?.sourceResearchSessionID
+            sourceResearchSessionID: source?.sourceResearchSessionID,
+            thesis: thesis.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         context.insert(record)
         do {

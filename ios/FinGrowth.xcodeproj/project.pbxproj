@@ -18,6 +18,7 @@
 		1DB663BB289BF2BC5910F82F /* CSVPrivacyParserGemmaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1442139D9F32B9D1420E504A /* CSVPrivacyParserGemmaTests.swift */; };
 		20FF285108A9C8253B38A70D /* QueryRewriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D86C2BFD2F205263C068D0D1 /* QueryRewriter.swift */; };
 		23F1272786E343FFFFEEB9A6 /* ThermalMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F34143077479B0328819FA /* ThermalMonitorTests.swift */; };
+		248454CA131BA3836220DFD9 /* PaperOrderForm.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0130FD2B7879332CB8D0371C /* PaperOrderForm.swift */; };
 		2732289B772D2DB199C88F99 /* ResearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A27418E9ACE6AE2165327644 /* ResearchView.swift */; };
 		2811CC416181979CEDF51B5E /* ModelDownloadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE9E29459E39FDDE789D1BC8 /* ModelDownloadView.swift */; };
 		294DB2355A46113258B1D3C1 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70907220A5A69575403668B3 /* RootTabView.swift */; };
@@ -71,6 +72,7 @@
 		C330297C1A2F56BEDDB1612E /* AuthCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB68E055F08A9F93EA22431C /* AuthCoordinatorTests.swift */; };
 		C50211EAD55A7E7E3394E7E8 /* GemmaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21234ACAF306DFF1BCE8E8C9 /* GemmaService.swift */; };
 		C6CEF6F40281BE2F335438F0 /* PaperTradingClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BF1982E6D3245577A734292 /* PaperTradingClient.swift */; };
+		D86CF2D3AB77C18BFAA1B240 /* PaperTradeThesisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF9B82DBF842F9DA52BC61E5 /* PaperTradeThesisTests.swift */; };
 		DC932C77BA806F005036800B /* QueryRewriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E739B4C1D34CA02A016D03A /* QueryRewriterTests.swift */; };
 		DD02ADC10961637A8617FFC7 /* DataFreshnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 611522D4E51EE2F64CC630B1 /* DataFreshnessTests.swift */; };
 		E17A76AD283792C33E83A20D /* GemmaModelDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4036E11D7DF8A72E749D8AD7 /* GemmaModelDownloader.swift */; };
@@ -104,6 +106,7 @@
 
 /* Begin PBXFileReference section */
 		0043C2C98821F81537CE940F /* IntentRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentRouterTests.swift; sourceTree = "<group>"; };
+		0130FD2B7879332CB8D0371C /* PaperOrderForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperOrderForm.swift; sourceTree = "<group>"; };
 		0234483FDC89D5CE5558F536 /* TickerCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TickerCatalog.swift; sourceTree = "<group>"; };
 		03C0955B265EC357F60D6706 /* RootTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTab.swift; sourceTree = "<group>"; };
 		05A9DADCFCE177368B1D4009 /* AnalysisStreamController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisStreamController.swift; sourceTree = "<group>"; };
@@ -164,6 +167,7 @@
 		C3F34143077479B0328819FA /* ThermalMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThermalMonitorTests.swift; sourceTree = "<group>"; };
 		C5FC323C7511F1088A1C015E /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		C7E7671C34AD85B21838731F /* IndicatorDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndicatorDisplay.swift; sourceTree = "<group>"; };
+		CF9B82DBF842F9DA52BC61E5 /* PaperTradeThesisTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTradeThesisTests.swift; sourceTree = "<group>"; };
 		D51B35C851271E867418CCC3 /* AuthClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthClientTests.swift; sourceTree = "<group>"; };
 		D86C2BFD2F205263C068D0D1 /* QueryRewriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueryRewriter.swift; sourceTree = "<group>"; };
 		D925F43446D8B6B05C1BE8F1 /* ShareableProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareableProfile.swift; sourceTree = "<group>"; };
@@ -175,7 +179,7 @@
 		EE9E29459E39FDDE789D1BC8 /* ModelDownloadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloadView.swift; sourceTree = "<group>"; };
 		F21182A4D3B5EB8B0761D7D2 /* AnalysisAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisAPI.swift; sourceTree = "<group>"; };
 		F93DD0A08011A8FF64F86C93 /* ResearchHistoryEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchHistoryEntry.swift; sourceTree = "<group>"; };
-		"TEMP_F3EAE0AC-1AA8-42EF-A956-5EF9F2D2AB62" /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		"TEMP_9954FE37-1283-446C-8482-C2939485D98C" /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -259,6 +263,7 @@
 				7BDC3EC27889F86113C60055 /* GemmaServiceTests.swift */,
 				37D75D924AED7344411C3713 /* IndicatorFormatterTests.swift */,
 				0043C2C98821F81537CE940F /* IntentRouterTests.swift */,
+				CF9B82DBF842F9DA52BC61E5 /* PaperTradeThesisTests.swift */,
 				085E8AAAFDB307730078AEE0 /* PaperTradingClientTests.swift */,
 				A57C9E617D24D0DD720990E8 /* PortfolioAnalyzerTests.swift */,
 				93E54EC1B36614D39A367FD8 /* PrivacyAuditLogTests.swift */,
@@ -309,6 +314,7 @@
 				21234ACAF306DFF1BCE8E8C9 /* GemmaService.swift */,
 				9F147082300F451DD0D4248C /* IntentRouter.swift */,
 				DD5921AC7CC0A5588C3F919E /* LlamaInferenceBackend.swift */,
+				0130FD2B7879332CB8D0371C /* PaperOrderForm.swift */,
 				1A38C0A35AD998F4C10F8B8E /* PaperTradePrefill.swift */,
 				8BF1982E6D3245577A734292 /* PaperTradingClient.swift */,
 				AFDE7B78F1CF99B05489A41A /* PIIExtractor.swift */,
@@ -324,10 +330,10 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
-		"TEMP_7AEF4F6C-6E34-47DB-B207-156F6D0B20B4" /* ios */ = {
+		"TEMP_AF00C91C-A2BC-412F-AAA3-3555FB2C00C5" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_F3EAE0AC-1AA8-42EF-A956-5EF9F2D2AB62" /* Signing.xcconfig */,
+				"TEMP_9954FE37-1283-446C-8482-C2939485D98C" /* Signing.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -430,6 +436,7 @@
 				5B8AD7768245F3E0CA1626B6 /* GemmaServiceTests.swift in Sources */,
 				AA06C68267684440E77D509C /* IndicatorFormatterTests.swift in Sources */,
 				73E3B75AF10E51094E857B82 /* IntentRouterTests.swift in Sources */,
+				D86CF2D3AB77C18BFAA1B240 /* PaperTradeThesisTests.swift in Sources */,
 				AA4C4FFBB90D0982E7287FC6 /* PaperTradingClientTests.swift in Sources */,
 				8B200EC108D69C5BE62491C0 /* PortfolioAnalyzerTests.swift in Sources */,
 				4988FCA29B9110A17C6D5E4B /* PrivacyAuditLogTests.swift in Sources */,
@@ -469,6 +476,7 @@
 				5C3C988A74D1CF1E94B32835 /* LlamaInferenceBackend.swift in Sources */,
 				2811CC416181979CEDF51B5E /* ModelDownloadView.swift in Sources */,
 				3C7B80A72780104FDF6BDEC4 /* PIIExtractor.swift in Sources */,
+				248454CA131BA3836220DFD9 /* PaperOrderForm.swift in Sources */,
 				06D6C40760C5A4BA348B2038 /* PaperTrade.swift in Sources */,
 				74F53CD8D46BB38E34A535BD /* PaperTradePrefill.swift in Sources */,
 				C6CEF6F40281BE2F335438F0 /* PaperTradingClient.swift in Sources */,
@@ -505,7 +513,7 @@
 /* Begin XCBuildConfiguration section */
 		342022D507C6E6CE02FCAE6F /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_F3EAE0AC-1AA8-42EF-A956-5EF9F2D2AB62" /* Signing.xcconfig */;
+			baseConfigurationReference = "TEMP_9954FE37-1283-446C-8482-C2939485D98C" /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
@@ -708,7 +716,7 @@
 		};
 		EDF1E69E96337CEEEE594C6C /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_F3EAE0AC-1AA8-42EF-A956-5EF9F2D2AB62" /* Signing.xcconfig */;
+			baseConfigurationReference = "TEMP_9954FE37-1283-446C-8482-C2939485D98C" /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;

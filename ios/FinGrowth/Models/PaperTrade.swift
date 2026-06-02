@@ -80,6 +80,11 @@ final class PaperTradeRecord {
     // PersistentIdentifier because SwiftData rejects PersistentIdentifier as
     // a stored property.
     var sourceResearchSessionID: UUID?
+    // V12-01: the user's own short rationale for the trade, required at order
+    // time. Captured here (on-device) alongside the linked session ID so the
+    // research-to-outcome loop (V12-02) has substance to check against. Default
+    // "" so the V6 → V7 migration is lightweight for any pre-thesis rows.
+    var thesis: String = ""
 
     init(
         brokerOrderID: String,
@@ -93,7 +98,8 @@ final class PaperTradeRecord {
         sourceQuery: String = "",
         sourceAnalysisType: AnalysisType = .general,
         sourceConfidence: String = "",
-        sourceResearchSessionID: UUID? = nil
+        sourceResearchSessionID: UUID? = nil,
+        thesis: String = ""
     ) {
         self.brokerOrderID = brokerOrderID
         self.ticker = ticker.uppercased()
@@ -107,6 +113,7 @@ final class PaperTradeRecord {
         self.sourceAnalysisTypeRaw = sourceAnalysisType.rawValue
         self.sourceConfidence = sourceConfidence
         self.sourceResearchSessionID = sourceResearchSessionID
+        self.thesis = thesis
     }
 
     var sourceAnalysisType: AnalysisType {

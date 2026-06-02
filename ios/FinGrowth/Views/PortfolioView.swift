@@ -1087,6 +1087,7 @@ private struct PaperTradeOrderSheet: View {
     @State private var ticker: String = ""
     @State private var side: Side?
     @State private var quantity: String = "1"
+    @State private var thesis: String = ""
     @State private var sourceNote: String = ""
     @State private var pendingSource: PaperTradePrefill.Pending?
     @State private var isSubmitting: Bool = false
@@ -1116,6 +1117,23 @@ private struct PaperTradeOrderSheet: View {
                     Text("Paper trade")
                 } footer: {
                     Text("Routes through the backend's Alpaca paper endpoint. Never live.")
+                }
+
+                // V12-01: a short thesis is required before the order can be
+                // placed — the user states *why*, so the trade can later be
+                // checked against its outcome. Stays on-device with the trade.
+                Section {
+                    TextField(
+                        "Why are you placing this trade?",
+                        text: $thesis,
+                        axis: .vertical
+                    )
+                    .lineLimit(3...6)
+                } header: {
+                    Text("Thesis")
+                } footer: {
+                    Text("Required. Your own rationale — not advice. Stored privately on-device "
+                        + "with this trade and its linked analysis.")
                 }
 
                 if !sourceNote.isEmpty {
@@ -1159,9 +1177,12 @@ private struct PaperTradeOrderSheet: View {
     }
 
     private var canSubmit: Bool {
-        !ticker.trimmingCharacters(in: .whitespaces).isEmpty
-            && side != nil
-            && (Double(quantity) ?? 0) > 0
+        PaperOrderForm.canPlace(
+            ticker: ticker,
+            sideSelected: side != nil,
+            quantity: Double(quantity),
+            thesis: thesis
+        )
     }
 
     private func applyPrefill() {
@@ -1181,6 +1202,7 @@ private struct PaperTradeOrderSheet: View {
             ticker: ticker,
             qty: qty,
             side: side.rawValue,
+            thesis: thesis,
             source: pendingSource
         )
         if order != nil {
@@ -1227,6 +1249,12 @@ private struct LinkedAnalysisSheet: View {
             Text("Submitted \(trade.submittedAt, style: .date)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            // V12-01: the rationale captured when the trade was placed.
+            if !trade.thesis.isEmpty {
+                Text("Your thesis: \(trade.thesis)")
+                    .font(.footnote)
+                    .padding(.top, 2)
+            }
         }
     }
 

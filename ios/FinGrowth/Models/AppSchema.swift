@@ -207,6 +207,53 @@ enum AppSchemaV2: VersionedSchema {
         }
     }
 
+    // Pinned pre-V7 PaperTradeRecord shape (no thesis). V2–V6 all shipped this
+    // shape, so they reference AppSchemaV2.PaperTradeRecord; only V7 adds the
+    // V12-01 `thesis` column. The live PaperTradeRecord is the current (V7) shape.
+    @Model
+    final class PaperTradeRecord {
+        @Attribute(.unique) var brokerOrderID: String
+        var ticker: String
+        var qty: Double
+        var side: String
+        var status: String
+        var submittedAt: Date
+        var filledQty: Double
+        var filledAvgPrice: Double?
+        var sourceQuery: String
+        var sourceAnalysisTypeRaw: String
+        var sourceConfidence: String
+        var sourceResearchSessionID: UUID?
+
+        init(
+            brokerOrderID: String,
+            ticker: String,
+            qty: Double,
+            side: String,
+            status: String,
+            submittedAt: Date,
+            filledQty: Double = 0,
+            filledAvgPrice: Double? = nil,
+            sourceQuery: String = "",
+            sourceAnalysisTypeRaw: String = AnalysisType.general.rawValue,
+            sourceConfidence: String = "",
+            sourceResearchSessionID: UUID? = nil
+        ) {
+            self.brokerOrderID = brokerOrderID
+            self.ticker = ticker
+            self.qty = qty
+            self.side = side
+            self.status = status
+            self.submittedAt = submittedAt
+            self.filledQty = filledQty
+            self.filledAvgPrice = filledAvgPrice
+            self.sourceQuery = sourceQuery
+            self.sourceAnalysisTypeRaw = sourceAnalysisTypeRaw
+            self.sourceConfidence = sourceConfidence
+            self.sourceResearchSessionID = sourceResearchSessionID
+        }
+    }
+
     // V2 shapes of the imported-portfolio models, pinned so V3 can add fields
     // (purchaseDate, accountType, sourceBrokerage) and drop PortfolioSnapshot
     // without corrupting the on-disk description of an existing V2 store. The
@@ -341,7 +388,7 @@ enum AppSchemaV3: VersionedSchema {
             AppSchemaV2.ShareableProfile.self,
             AppSchemaV2.AuditEntry.self,
             ResearchHistoryEntry.self,
-            PaperTradeRecord.self,
+            AppSchemaV2.PaperTradeRecord.self,
         ]
     }
 
@@ -419,7 +466,7 @@ enum AppSchemaV4: VersionedSchema {
             AppSchemaV2.ShareableProfile.self,
             AppSchemaV2.AuditEntry.self,
             ResearchHistoryEntry.self,
-            PaperTradeRecord.self,
+            AppSchemaV2.PaperTradeRecord.self,
         ]
     }
 }
@@ -440,7 +487,7 @@ enum AppSchemaV5: VersionedSchema {
             ShareableProfile.self,
             AppSchemaV2.AuditEntry.self,
             ResearchHistoryEntry.self,
-            PaperTradeRecord.self,
+            AppSchemaV2.PaperTradeRecord.self,
         ]
     }
 }
@@ -461,6 +508,27 @@ enum AppSchemaV6: VersionedSchema {
             ShareableProfile.self,
             AuditEntry.self,
             ResearchHistoryEntry.self,
+            AppSchemaV2.PaperTradeRecord.self,
+        ]
+    }
+}
+
+// MARK: - V7 (V12-01 thesis on PaperTradeRecord)
+
+// V7 adds the V12-01 `thesis` column to PaperTradeRecord — the user's required
+// rationale, captured at order time. The live PaperTradeRecord is the current
+// (V7) shape; the delta is an additive column with a "" default, so V6 → V7 is
+// lightweight.
+enum AppSchemaV7: VersionedSchema {
+    static let versionIdentifier = Schema.Version(7, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            PrivateLedger.self,
+            LedgerHolding.self,
+            ShareableProfile.self,
+            AuditEntry.self,
+            ResearchHistoryEntry.self,
             PaperTradeRecord.self,
         ]
     }
@@ -470,12 +538,18 @@ enum AppSchemaV6: VersionedSchema {
 
 enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self, AppSchemaV5.self, AppSchemaV6.self]
+        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self, AppSchemaV5.self, AppSchemaV6.self, AppSchemaV7.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7]
     }
+
+    // Additive `thesis` column (default "") on PaperTradeRecord (V12-01).
+    static let migrateV6toV7 = MigrationStage.lightweight(
+        fromVersion: AppSchemaV6.self,
+        toVersion: AppSchemaV7.self
+    )
 
     // Additive optional privacy-audit columns on AuditEntry.
     static let migrateV5toV6 = MigrationStage.lightweight(
