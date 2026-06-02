@@ -63,10 +63,14 @@ final class RecontextualizerTests: XCTestCase {
     // MARK: - Acceptance: no portfolio reference → pass through unchanged
 
     func testNoPortfolioReferencePassesThroughUnchanged() async {
-        let resp = response(narrative: "NVDA reported strong quarterly earnings and the stock rose 5%.")
+        // No portfolio cue AND the analyzed ticker (NVDA) isn't held → nothing to
+        // enrich, so the cloud response passes through untouched.
+        let resp = response(narrative: "NVDA reported strong quarterly earnings and the stock rose 5%.",
+                            ticker: "NVDA")
         let enriched = await Recontextualizer().enrich(response: resp, ledger: techLedger())
 
         XCTAssertNil(enriched.personalizedContext)
+        XCTAssertNil(enriched.positionInsight)
         XCTAssertFalse(enriched.didEnrich)
         XCTAssertEqual(enriched.response, resp, "the cloud response must pass through byte-for-byte")
     }
@@ -185,6 +189,91 @@ final class RecontextualizerTests: XCTestCase {
     func testEmptyLedgerNeverEnriches() {
         let resp = response(narrative: "Your concentrated tech allocation is notable.")
         XCTAssertNil(Recontextualizer.personalizedContext(for: resp, ledger: ledger([])))
+    }
+
+    // MARK: - V11-01: "What this means for you" (owns the analyzed ticker)
+
+    func testPositionInsightWhenUserHoldsAnalyzedTicker() {
+        // AC1: the result references the user's actual position in the ticker.
+        let resp = response(narrative: "AAPL momentum looks elevated.", ticker: "AAPL")
+        let insight = Recontextualizer.positionInsight(for: resp, ledger: techLedger())
+
+        XCTAssertEqual(insight?.ticker, "AAPL")
+        XCTAssertTrue(insight?.lines.first?.contains("500 shares of AAPL") ?? false)
+        XCTAssertEqual(insight?.factPhrases, ["500 shares of AAPL"])
+    }
+
+    func testPositionInsightOmittedWhenTickerNotHeld() {
+        // AC2: omitted gracefully when the user doesn't hold the analyzed ticker.
+        let resp = response(narrative: "NVDA looks strong.", ticker: "NVDA")
+        XCTAssertNil(Recontextualizer.positionInsight(for: resp, ledger: techLedger()))
+    }
+
+    func testPositionInsightNilForNilOrEmptyLedger() {
+        let resp = response(narrative: "AAPL.", ticker: "AAPL")
+        XCTAssertNil(Recontextualizer.positionInsight(for: resp, ledger: nil))
+        XCTAssertNil(Recontextualizer.positionInsight(for: resp, ledger: ledger([])))
+    }
+
+    func testPositionInsightAggregatesLotsOfSameTicker() {
+        let twoLots = ledger([("AAPL", 300, 100), ("AAPL", 200, 150)])  // 500 total
+        let resp = response(narrative: "AAPL.", ticker: "AAPL")
+        let insight = Recontextualizer.positionInsight(for: resp, ledger: twoLots)
+        XCTAssertEqual(insight?.factPhrases, ["500 shares of AAPL"])
+    }
+
+    func testEnrichAttachesPositionInsightAdditivelyAndOnDevice() async {
+        // AC3 (gemma=nil → on-device, zero network) + AC4 (cloud text unchanged).
+        // The narrative has no portfolio cue, so the P5-08 mapping is nil — but
+        // the position insight still fires because the user owns AAPL.
+        let original = "AAPL reported earnings; the stock moved on the print."
+        let resp = response(narrative: original, ticker: "AAPL")
+        let enriched = await Recontextualizer(gemma: nil).enrich(response: resp, ledger: techLedger())
+
+        XCTAssertNil(enriched.personalizedContext)  // no cue → no sector mapping
+        XCTAssertNotNil(enriched.positionInsight)    // but owns the analyzed ticker
+        XCTAssertTrue(enriched.didEnrich)            // P3: didEnrich reflects the insight
+        XCTAssertTrue(enriched.positionInsight?.lines.first?.contains("500 shares of AAPL") ?? false)
+        XCTAssertEqual(enriched.response.analysis.narrative, original)  // additive
+        XCTAssertEqual(enriched.response, resp)
+    }
+
+    func testPositionInsightAggregatesAcrossMultipleLedgers() {
+        // P2: a ticker held across multiple imported ledgers is summed, not
+        // limited to the newest ledger.
+        let a = ledger([("AAPL", 300, 100)])
+        let b = ledger([("AAPL", 200, 150), ("MSFT", 50, 380)])
+        let merged = a.holdings + b.holdings
+        let resp = response(narrative: "AAPL.", ticker: "AAPL")
+        let insight = Recontextualizer.positionInsight(for: resp, holdings: merged)
+        XCTAssertEqual(insight?.factPhrases, ["500 shares of AAPL"])  // 300 + 200
+    }
+
+    func testGemmaSmoothingGuardRejectsAdvice() {
+        // P1: the smoothing acceptance gate rejects directive/advice language,
+        // even when the share-count fact is preserved.
+        XCTAssertTrue(Recontextualizer.containsAdvice("You own 500 shares of AAPL, so you should sell."))
+        XCTAssertTrue(Recontextualizer.containsAdvice("We recommend trimming your position."))
+        XCTAssertTrue(Recontextualizer.containsAdvice("It's time to sell."))
+        XCTAssertTrue(Recontextualizer.containsAdvice("Consider buying more."))
+        // A faithful factual restatement is NOT advice.
+        XCTAssertFalse(Recontextualizer.containsAdvice("You hold 500 shares of AAPL — a position you own."))
+        XCTAssertFalse(Recontextualizer.containsAdvice(
+            "Your technology exposure: 500 shares of AAPL and 200 shares of MSFT."))
+    }
+
+    func testEnrichOmitsPositionInsightWhenTickerNotHeld() async {
+        let resp = response(narrative: "NVDA news.", ticker: "NVDA")
+        let enriched = await Recontextualizer().enrich(response: resp, ledger: techLedger())
+        XCTAssertNil(enriched.positionInsight)
+    }
+
+    func testPositionFactPhraseSurvivesParaphraseValidation() {
+        XCTAssertTrue(Recontextualizer.factsPreserved(
+            ["500 shares of AAPL"], in: "You own 500 shares of AAPL today."))
+        // An inflated count must not satisfy the position fact.
+        XCTAssertFalse(Recontextualizer.factsPreserved(
+            ["500 shares of AAPL"], in: "You own 1500 shares of AAPL."))
     }
 
     // MARK: - Zero network

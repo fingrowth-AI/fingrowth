@@ -35,13 +35,35 @@ struct PersonalizedContext: Equatable, Sendable {
     static let onDeviceNote = "Matched on-device from your private ledger — these specifics never left your device."
 }
 
+// V11-01: a "What this means for you" section, triggered by *owning the
+// analyzed ticker* (not by a cloud-narrative cue, the way PersonalizedContext
+// is). It references the user's real position in the analyzed stock, resolved
+// on-device from the PrivateLedger so the specifics never transit the network.
+struct PositionInsight: Equatable, Sendable {
+    static let title = "What this means for you"
+
+    // One or more lines referencing the held position (deterministic floor; an
+    // optional on-device model may phrase them more fluently).
+    let lines: [String]
+    // The analyzed ticker the user holds.
+    let ticker: String
+    // Exact "<count> shares of <TICKER>" phrases, for paraphrase validation.
+    let factPhrases: [String]
+    // Provenance — resolved on-device, never transmitted.
+    let note: String
+}
+
 struct EnrichedResponse: Equatable, Sendable {
     // The original cloud analysis, byte-for-byte unchanged.
     let response: AnalysisResponse
     // nil when the cloud text referenced nothing we could map to a holding.
     let personalizedContext: PersonalizedContext?
+    // V11-01: present when the user holds the analyzed ticker; nil otherwise.
+    var positionInsight: PositionInsight? = nil
 
-    var didEnrich: Bool { personalizedContext != nil }
+    // True when *any* on-device section was produced — the cue-based mapping or
+    // the owned-ticker insight (V11-01).
+    var didEnrich: Bool { personalizedContext != nil || positionInsight != nil }
 }
 
 struct Recontextualizer: Sendable {
@@ -55,19 +77,33 @@ struct Recontextualizer: Sendable {
     /// holdings in `ledger`. Returns the original response plus an optional
     /// personalized-context section; never mutates the cloud analysis text.
     func enrich(response: AnalysisResponse, ledger: PrivateLedger?) async -> EnrichedResponse {
-        guard let context = Self.personalizedContext(for: response, ledger: ledger) else {
-            return EnrichedResponse(response: response, personalizedContext: nil)
+        await enrich(response: response, holdings: ledger?.holdings ?? [])
+    }
+
+    /// V11-01/P2: enrich against holdings aggregated across *all* imported
+    /// ledgers, so a position held in an older account (or split across
+    /// accounts) is still seen and counted.
+    func enrich(response: AnalysisResponse, holdings: [LedgerHolding]) async -> EnrichedResponse {
+        // V11-01: "What this means for you" — keyed on owning the analyzed
+        // ticker, independent of the cloud cue that drives PersonalizedContext.
+        let position = await enrichedPosition(response: response, holdings: holdings)
+
+        guard let context = Self.personalizedContext(for: response, holdings: holdings) else {
+            return EnrichedResponse(
+                response: response, personalizedContext: nil, positionInsight: position
+            )
         }
 
         // Optional: let a loaded on-device model phrase the mapping more
         // fluently. Accepted only if it preserves every fact the deterministic
-        // lines asserted — both the tickers *and* their share counts. A
-        // paraphrase that drops a holding or rounds "500 shares" to "some
-        // shares" would quietly corrupt trusted context, so the deterministic
-        // lines remain the floor. Still zero network.
+        // lines asserted *and* introduces no advice — a guardrail, not a prompt.
+        // A paraphrase that drops a holding, inflates a count, or slips in
+        // buy/sell language is rejected and the deterministic lines stand.
+        // Still zero network.
         if let gemma, await gemma.usesRealModel, await gemma.isReady,
            let prose = await modelSmooth(lines: context.lines, gemma: gemma),
-           Self.preservesFacts(context, in: prose) {
+           Self.preservesFacts(context, in: prose),
+           !Self.containsAdvice(prose) {
             return EnrichedResponse(
                 response: response,
                 personalizedContext: PersonalizedContext(
@@ -75,23 +111,85 @@ struct Recontextualizer: Sendable {
                     tickers: context.tickers,
                     factPhrases: context.factPhrases,
                     note: PersonalizedContext.onDeviceNote
-                )
+                ),
+                positionInsight: position
             )
         }
 
-        return EnrichedResponse(response: response, personalizedContext: context)
+        return EnrichedResponse(
+            response: response, personalizedContext: context, positionInsight: position
+        )
+    }
+
+    // MARK: - V11-01: position insight (owns the analyzed ticker)
+
+    /// The "What this means for you" section, with an optional on-device Gemma
+    /// smoothing pass (accepted only if it preserves the share-count + ticker
+    /// fact *and* adds no advice). Deterministic floor; zero network.
+    func enrichedPosition(
+        response: AnalysisResponse, holdings: [LedgerHolding]
+    ) async -> PositionInsight? {
+        guard let base = Self.positionInsight(for: response, holdings: holdings) else { return nil }
+        if let gemma, await gemma.usesRealModel, await gemma.isReady,
+           let prose = await modelSmooth(lines: base.lines, gemma: gemma),
+           Self.factsPreserved(base.factPhrases, in: prose),
+           !Self.containsAdvice(prose) {
+            return PositionInsight(
+                lines: [prose],
+                ticker: base.ticker,
+                factPhrases: base.factPhrases,
+                note: base.note
+            )
+        }
+        return base
+    }
+
+    static func positionInsight(
+        for response: AnalysisResponse, ledger: PrivateLedger?
+    ) -> PositionInsight? {
+        positionInsight(for: response, holdings: ledger?.holdings ?? [])
+    }
+
+    /// Build the position insight when the user holds the analyzed ticker, else
+    /// nil (so the section is omitted gracefully). Pure and synchronous — the
+    /// verifiable floor. Lots of the same ticker — across every passed-in
+    /// holding — are aggregated into one figure (P2).
+    static func positionInsight(
+        for response: AnalysisResponse, holdings: [LedgerHolding]
+    ) -> PositionInsight? {
+        let ticker = response.ticker.uppercased()
+        guard !ticker.isEmpty else { return nil }
+        let lots = holdings.filter { $0.ticker.uppercased() == ticker && $0.quantity > 0 }
+        guard !lots.isEmpty else { return nil }
+
+        let shares = lots.reduce(0.0) { $0 + $1.quantity }
+        let phrase = "\(formatShares(shares)) shares of \(ticker)"
+        let line = "You own \(phrase), so this analysis is about a position you hold."
+        return PositionInsight(
+            lines: [line],
+            ticker: ticker,
+            factPhrases: [phrase],
+            note: PersonalizedContext.onDeviceNote
+        )
     }
 
     // MARK: - Deterministic core
 
-    /// Build the personalized-context section, or nil when nothing maps. Pure
-    /// and synchronous so it's directly testable and is the verifiable floor.
     static func personalizedContext(
         for response: AnalysisResponse,
         ledger: PrivateLedger?
     ) -> PersonalizedContext? {
-        guard let ledger else { return nil }
-        let holdings = ledger.holdings.filter { $0.quantity > 0 }
+        personalizedContext(for: response, holdings: ledger?.holdings ?? [])
+    }
+
+    /// Build the personalized-context section, or nil when nothing maps. Pure
+    /// and synchronous so it's directly testable and is the verifiable floor.
+    /// Operates on holdings aggregated across all imported ledgers (P2).
+    static func personalizedContext(
+        for response: AnalysisResponse,
+        holdings allHoldings: [LedgerHolding]
+    ) -> PersonalizedContext? {
+        let holdings = allHoldings.filter { $0.quantity > 0 }
         guard !holdings.isEmpty else { return nil }
 
         // We map references only against text describing the *portfolio*. A
@@ -177,6 +275,28 @@ struct Recontextualizer: Sendable {
         // Compile-time constant pattern; a failure is a programmer error.
         // swiftlint:disable:next force_try
         try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }
+
+    // V11-01 (P1): a hard guard on the optional Gemma smoothing. This module
+    // restates portfolio *facts* — it must never emit advice. A model paraphrase
+    // that slips in buy/sell/hold directives is rejected (the deterministic line
+    // stands), regardless of what the prompt asked for. Note that the legitimate
+    // phrasing "a position you hold" / "you own" is NOT advice — only directive
+    // verbs paired with an action trigger are.
+    private static let advicePatterns: [NSRegularExpression] = [
+        makeRegex(#"\bshould\s+(?:buy|sell|short|hold|exit|trim|reduce|add|dump|avoid|get\s+out)\b"#),
+        makeRegex(#"\b(?:recommend(?:s|ed|ation)?|advis(?:e|es|ed)|advice)\b"#),
+        makeRegex(#"\b(?:buy|sell)\s+(?:now|immediately|this|the\s+stock)\b"#),
+        makeRegex(#"\bconsider\s+(?:buying|selling|shorting|exiting|trimming|adding)\b"#),
+        makeRegex(#"\b(?:it'?s\s+)?time\s+to\s+(?:buy|sell|short|exit)\b"#),
+        makeRegex(#"\b(?:take\s+profits?|cut\s+(?:your\s+)?losses)\b"#),
+        makeRegex(#"\b(?:reduce|trim|increase|lighten|boost)\s+(?:your\s+)?(?:exposure|position|holdings?|stake)\b"#),
+    ]
+
+    static func containsAdvice(_ text: String) -> Bool {
+        let ns = text as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        return advicePatterns.contains { $0.firstMatch(in: text, range: range) != nil }
     }
 
     // Detection keywords per coarse category (matched against lowercased text).
@@ -281,9 +401,16 @@ struct Recontextualizer: Sendable {
     // faithful rewrite that reorders within a phrase is conservatively rejected
     // and the deterministic lines stand.
     static func preservesFacts(_ context: PersonalizedContext, in prose: String) -> Bool {
+        factsPreserved(context.factPhrases, in: prose)
+    }
+
+    /// True iff every "<count> shares of <TICKER>" phrase survives in ``prose``
+    /// as an intact, word-bounded unit. Shared by the P5-08 mapping and the
+    /// V11-01 position insight so both reject inflated counts / prefix collisions.
+    static func factsPreserved(_ factPhrases: [String], in prose: String) -> Bool {
         let ns = prose as NSString
         let range = NSRange(location: 0, length: ns.length)
-        return context.factPhrases.allSatisfy { phrase in
+        return factPhrases.allSatisfy { phrase in
             let pattern = #"\b"# + NSRegularExpression.escapedPattern(for: phrase) + #"\b"#
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
                 return false

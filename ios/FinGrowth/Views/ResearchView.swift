@@ -50,6 +50,9 @@ struct ResearchView: View {
     // P5-08: holdings-specific context mapped on-device from a cloud result.
     // Additive — rendered as its own section, never edited into the analysis.
     @State private var enrichedContext: PersonalizedContext?
+    // V11-01: "What this means for you" — the user's real position in the
+    // analyzed ticker, resolved on-device. Additive; nil when the ticker isn't held.
+    @State private var positionInsight: PositionInsight?
     @Environment(\.colorScheme) private var colorScheme
 
     // Wire names mirror backend/app/routers/analysis.py — progress frames emit
@@ -368,6 +371,13 @@ struct ResearchView: View {
                     }
                 }
 
+                // V11-01: "What this means for you" — references the user's real
+                // position when they hold the analyzed ticker. Additive and
+                // on-device; omitted entirely when the ticker isn't held.
+                if let positionInsight {
+                    positionInsightSection(positionInsight)
+                }
+
                 // V10-05: a small price-vs-Bollinger-bands chart leads the
                 // evidence — a picture of where the close sits, before the
                 // numbers. Renders only when the bands are available.
@@ -455,6 +465,27 @@ struct ResearchView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
+    // V11-01: "What this means for you" — the user's real position in the
+    // analyzed ticker, resolved on-device. Its own card so the cloud analysis
+    // above stays verbatim (additive).
+    private func positionInsightSection(_ insight: PositionInsight) -> some View {
+        Card(title: PositionInsight.title) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(insight.lines.enumerated()), id: \.offset) { _, line in
+                    Label {
+                        Text(line).font(.subheadline)
+                    } icon: {
+                        Image(systemName: "person.crop.circle.badge.checkmark")
+                            .foregroundStyle(FinTheme.mint)
+                    }
+                }
+                Text(insight.note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     // P5-08: holdings-specific context resolved on-device. Rendered as its own
     // card so the cloud analysis above stays verbatim.
     private func personalizedContextSection(_ context: PersonalizedContext) -> some View {
@@ -540,6 +571,7 @@ struct ResearchView: View {
         auditErrorMessage = nil
         localOnlyMessage = nil
         enrichedContext = nil
+        positionInsight = nil
         // Drop any link to the previous analysis. persistIfNeeded reassigns
         // these once the new result is saved; until then the "Test with paper
         // trade" button must not attach a trade to a stale session.
@@ -663,15 +695,19 @@ struct ResearchView: View {
     private func recontextualize(_ response: AnalysisResponse?) {
         guard let response else {
             enrichedContext = nil
+            positionInsight = nil
             return
         }
-        let ledger = ledgers.first
+        // P2: recontextualize against holdings from *every* imported ledger, not
+        // just the newest — a position held in an older/other account still counts.
+        let holdings = ledgers.flatMap { $0.holdings }
         let recontextualizer = Recontextualizer(gemma: gemma)
         Task { @MainActor in
-            let result = await recontextualizer.enrich(response: response, ledger: ledger)
+            let result = await recontextualizer.enrich(response: response, holdings: holdings)
             // Drop a stale enrichment if a newer result has since arrived.
             guard controller?.finalResult?.sessionId == response.sessionId else { return }
             enrichedContext = result.personalizedContext
+            positionInsight = result.positionInsight
         }
     }
 
