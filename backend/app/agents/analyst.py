@@ -16,6 +16,8 @@ Why a deterministic fallback narrator?
 from __future__ import annotations
 
 import logging
+import math
+import re
 from typing import Any
 
 from app.config import settings
@@ -45,10 +47,16 @@ _SMA_MIN_BARS = 20
 _BOLLINGER_MIN_BARS = 20
 
 _NARRATIVE_SYSTEM_PROMPT = (
-    "You are a financial research assistant interpreting deterministic "
-    "technical indicators. Reference each provided indicator by name and "
-    "value. Use hedging language. Do NOT compute, predict prices, or "
-    "recommend buy/sell. Output 3-5 sentences of plain English."
+    "You are a financial research assistant. Interpret the deterministic "
+    "technical indicators you are given — do not just restate their values. "
+    "Explain what each key signal means (e.g. what an overbought RSI or a "
+    "positive MACD histogram implies for momentum) and explicitly call out "
+    "when signals agree or conflict (e.g. RSI overbought while MACD is still "
+    "positive). Anchor every interpretive claim to a provided indicator value "
+    "by quoting that value, so the reader can verify it. Never state a number "
+    "that is not in the provided indicators, never recompute or predict prices, "
+    "and never recommend buy or sell. Use hedging language. Output 3-5 "
+    "sentences of plain English."
 )
 
 
@@ -165,41 +173,121 @@ def _portfolio_context_sentence(
     return "Portfolio context: " + ", ".join(bits) + "."
 
 
+# RSI(14) >= 70 is the conventional overbought line, <= 30 oversold. The
+# "lean" (bullish / bearish / neutral) lets us compare RSI against MACD to spot
+# agreement vs. conflict without recomputing anything.
+_RSI_OVERBOUGHT = 70.0
+_RSI_OVERSOLD = 30.0
+
+
+def _rsi_reading(rsi: float) -> tuple[str, str]:
+    """Return ``(lean, meaning)`` for an RSI value — interpretation, not restatement."""
+    if rsi >= _RSI_OVERBOUGHT:
+        return ("bearish", "in overbought territory (above 70), which often means "
+                "buying has run hot and upside momentum may be stretched")
+    if rsi <= _RSI_OVERSOLD:
+        return ("bullish", "in oversold territory (below 30), which often means "
+                "selling has run hot and downside momentum may be stretched")
+    return ("neutral", "in neutral territory (between 30 and 70), neither "
+            "overbought nor oversold")
+
+
+def _macd_reading(macd: MACDIndicator) -> tuple[str, str]:
+    """Return ``(lean, meaning)`` for a MACD reading from the histogram sign."""
+    if macd.histogram > 0:
+        return ("bullish", "above its signal line (positive histogram), pointing "
+                "to upward momentum")
+    if macd.histogram < 0:
+        return ("bearish", "below its signal line (negative histogram), pointing "
+                "to downward momentum")
+    return ("neutral", "level with its signal line, pointing to flat momentum")
+
+
+def _signal_relationship(rsi_lean: str, macd_lean: str) -> str | None:
+    """A sentence on whether RSI and MACD agree or conflict (V10-01).
+
+    Conflict is the directional disagreement the design names — e.g. RSI
+    overbought (bearish lean) while MACD is still positive (bullish lean).
+    """
+    directional = {"bullish", "bearish"}
+    if rsi_lean in directional and macd_lean in directional:
+        if rsi_lean != macd_lean:
+            return (
+                f"These signals conflict: RSI leans {rsi_lean} while MACD leans "
+                f"{macd_lean}, so the move may be stretched even as momentum runs "
+                "the other way — read them together, not in isolation."
+            )
+        return (
+            f"RSI and MACD agree, both leaning {rsi_lean}, which reinforces the "
+            "read rather than contradicting it."
+        )
+    return None
+
+
 def _fallback_narrative(
     ticker: str,
     indicators: TechnicalIndicators,
     packet: ResearchPacket,
     portfolio_profile: dict[str, Any] | None = None,
 ) -> str:
-    """Deterministic template used when no LLM is configured.
+    """Deterministic interpretive narrative used when no LLM is configured (V10-01).
 
-    Every computed indicator is mentioned by name *and* numeric value so the
-    output remains auditable and the "narrative references computed
-    indicators" acceptance test passes without any network calls.
+    Explains what each computed signal *means* and whether the signals agree or
+    conflict — it never restates a value without context. Every claim is anchored
+    to the exact computed number (formatted identically to the indicator output),
+    so the narrative stays auditable, can't state a figure that differs from the
+    deterministic math, and the "references computed indicators" contract holds
+    offline.
     """
     parts: list[str] = [
-        f"Technical snapshot for {ticker} based on "
-        f"{indicators.sample_size} daily closes."
+        f"Technical read for {ticker} from {indicators.sample_size} daily closes."
     ]
+
+    rsi_lean: str | None = None
+    macd_lean: str | None = None
+
     if indicators.rsi is not None:
-        parts.append(f"RSI(14) is {indicators.rsi:.2f}.")
+        rsi_lean, rsi_meaning = _rsi_reading(indicators.rsi)
+        parts.append(f"RSI(14) at {indicators.rsi:.2f} is {rsi_meaning}.")
     if indicators.macd is not None:
+        macd_lean, macd_meaning = _macd_reading(indicators.macd)
         parts.append(
-            f"MACD(12/26/9): line {indicators.macd.macd:.4f}, "
-            f"signal {indicators.macd.signal:.4f}, "
-            f"histogram {indicators.macd.histogram:.4f}."
+            f"MACD(12/26/9) — line {indicators.macd.macd:.4f}, signal "
+            f"{indicators.macd.signal:.4f}, histogram {indicators.macd.histogram:.4f} "
+            f"— sits {macd_meaning}."
         )
+    if rsi_lean is not None and macd_lean is not None:
+        relationship = _signal_relationship(rsi_lean, macd_lean)
+        if relationship:
+            parts.append(relationship)
+
     if indicators.sma_20 is not None and indicators.latest_close is not None:
+        if indicators.latest_close > indicators.sma_20:
+            trend = "above its 20-day average, a mild uptrend cue"
+        elif indicators.latest_close < indicators.sma_20:
+            trend = "below its 20-day average, a mild downtrend cue"
+        else:
+            trend = "right at its 20-day average, a flat trend cue"
         parts.append(
-            f"Latest close {indicators.latest_close:.2f} "
-            f"versus SMA(20) {indicators.sma_20:.2f}."
+            f"The latest close {indicators.latest_close:.2f} is {trend} "
+            f"(SMA(20) {indicators.sma_20:.2f})."
         )
-    if indicators.bollinger is not None:
-        parts.append(
-            f"Bollinger(20, 2σ) band: lower {indicators.bollinger.lower:.2f}, "
-            f"middle {indicators.bollinger.middle:.2f}, "
-            f"upper {indicators.bollinger.upper:.2f}."
-        )
+    if indicators.bollinger is not None and indicators.latest_close is not None:
+        if indicators.latest_close > indicators.bollinger.upper:
+            band = (f"above the upper Bollinger band ({indicators.bollinger.upper:.2f}), "
+                    "an unusually stretched reading")
+        elif indicators.latest_close < indicators.bollinger.lower:
+            band = (f"below the lower Bollinger band ({indicators.bollinger.lower:.2f}), "
+                    "an unusually stretched reading")
+        else:
+            band = (f"within its Bollinger bands ({indicators.bollinger.lower:.2f} to "
+                    f"{indicators.bollinger.upper:.2f}), a normal range")
+        parts.append(f"Price is {band}.")
+
+    parts.append(
+        "No single indicator predicts where the price goes next; these describe "
+        "current conditions, not a recommendation."
+    )
     if packet.news:
         parts.append(
             f"Context: {len(packet.news)} recent news items considered."
@@ -212,6 +300,65 @@ def _fallback_narrative(
     if profile_sentence:
         parts.append(profile_sentence)
     return " ".join(parts)
+
+
+# Numeric tokens that *look* like a price or computed indicator: a dollar
+# amount, or a decimal with 2+ fractional digits. Plain integers (RSI(14),
+# SMA(20), thresholds 70/30, news counts) are excluded — the analyst never
+# quotes a *computed* value as a bare int. Mirrors the Risk Critic's detector;
+# this gate just routes a fabricating LLM to the clean deterministic fallback
+# *before* the critic ever sees it, so criterion 4 holds on the live path too.
+_NUMERIC_TOKEN_RE = re.compile(
+    r"\$\s*(?P<dollar>\d+(?:\.\d+)?)"
+    r"|"
+    r"(?<![\d.$])(?P<decimal>\d+\.\d{2,})(?!\d)"
+)
+_NUMERIC_TOLERANCE = 0.01
+
+
+def _allowed_numbers(indicators: TechnicalIndicators) -> list[float]:
+    """Every number the narrative may legitimately quote — the computed values."""
+    vals: list[float] = []
+    if indicators.rsi is not None:
+        vals.append(indicators.rsi)
+    if indicators.macd is not None:
+        vals.extend([indicators.macd.macd, indicators.macd.signal, indicators.macd.histogram])
+    if indicators.sma_20 is not None:
+        vals.append(indicators.sma_20)
+    if indicators.bollinger is not None:
+        vals.extend(
+            [
+                indicators.bollinger.upper,
+                indicators.bollinger.middle,
+                indicators.bollinger.lower,
+            ]
+        )
+    if indicators.latest_close is not None:
+        vals.append(indicators.latest_close)
+    return vals
+
+
+def _states_unsupported_number(text: str, indicators: TechnicalIndicators) -> bool:
+    """True if the text quotes a price-like number that matches no computed value.
+
+    This is the criterion-4 guard for the live LLM path: a narrative that states
+    a figure differing from the deterministic output is rejected (→ fallback).
+    """
+    allowed = _allowed_numbers(indicators)
+    for match in _NUMERIC_TOKEN_RE.finditer(text):
+        raw = match.group("dollar") or match.group("decimal")
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        if not any(
+            math.isclose(value, a, abs_tol=_NUMERIC_TOLERANCE, rel_tol=0.0)
+            for a in allowed
+        ):
+            return True
+    return False
 
 
 def _narrative_references_indicators(
@@ -257,14 +404,23 @@ def _narrative_references_indicators(
             or _value_quoted(indicators.macd.histogram, 4)
         ):
             return False
-    # SMA and Bollinger are secondary signals — only require the name so
-    # the check doesn't reject otherwise-good narratives that focus on
-    # the primary RSI/MACD indicators.
-    if indicators.sma_20 is not None and (
-        "SMA" not in upper and "MOVING AVERAGE" not in upper
-    ):
-        return False
-    if indicators.bollinger is not None and "BOLLINGER" not in upper:
+    # SMA and Bollinger must be named *and* value-anchored when computed — every
+    # interpretive claim is tied to a number the user can verify (V10-01 AC3).
+    if indicators.sma_20 is not None:
+        if ("SMA" not in upper and "MOVING AVERAGE" not in upper) or not _value_quoted(
+            indicators.sma_20, 2
+        ):
+            return False
+    if indicators.bollinger is not None:
+        if "BOLLINGER" not in upper or not (
+            _value_quoted(indicators.bollinger.upper, 2)
+            or _value_quoted(indicators.bollinger.middle, 2)
+            or _value_quoted(indicators.bollinger.lower, 2)
+        ):
+            return False
+    # No price-like number may appear that isn't a computed value (V10-01 AC4):
+    # a fabricated extra figure routes the narrative to the deterministic fallback.
+    if _states_unsupported_number(text, indicators):
         return False
     return True
 
@@ -303,9 +459,11 @@ def narrate(
             f"Recent headlines: {[n.headline for n in packet.news[:5]]}\n"
             f"Sources degraded: {packet.degraded}\n"
             f"Portfolio profile: {portfolio_profile or 'not provided'}\n"
-            "Write the narrative. If a portfolio profile is provided, briefly "
-            "tailor the language to its risk orientation and diversification "
-            "without recomputing any numbers."
+            "Write an interpretive narrative: explain what the indicators mean "
+            "together — where they agree, where they conflict — quoting each "
+            "value you reference so the reader can verify it. If a portfolio "
+            "profile is provided, briefly tailor the language to its risk "
+            "orientation and diversification without recomputing any numbers."
         )
         result = llm.invoke(
             [

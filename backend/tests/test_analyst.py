@@ -15,7 +15,7 @@ import pytest
 
 from app.agents import analyst as analyst_module
 from app.agents.analyst import analyst_node, analyze, narrate
-from app.models.analysis import AnalysisReport, TechnicalIndicators
+from app.models.analysis import AnalysisReport, MACDIndicator, TechnicalIndicators
 from app.models.market import PriceBar
 from app.models.news import NewsItem
 from app.models.research import ResearchPacket, Source
@@ -250,7 +250,8 @@ def test_narrate_fallback_used_when_api_key_missing(monkeypatch):
     monkeypatch.setattr(analyst_module.settings, "openai_api_key", "")
     indicators = TechnicalIndicators(rsi=55.5, sample_size=60)
     text = narrate("AAPL", indicators, _packet([]))
-    assert "RSI(14) is 55.50" in text
+    # V10-01: the value is still quoted (anchored), now wrapped in meaning.
+    assert "RSI" in text and "55.50" in text
     assert "AAPL" in text
 
 
@@ -272,8 +273,8 @@ def test_narrate_falls_back_when_llm_raises(monkeypatch):
 
     indicators = TechnicalIndicators(rsi=42.0, sample_size=60)
     text = narrate("AAPL", indicators, _packet([]))
-    # Fell back to the deterministic template.
-    assert "RSI(14) is 42.00" in text
+    # Fell back to the deterministic template — value still anchored.
+    assert "RSI" in text and "42.00" in text
 
 
 def test_narrate_falls_back_when_llm_omits_indicators(monkeypatch):
@@ -310,7 +311,7 @@ def test_narrate_falls_back_when_llm_omits_indicators(monkeypatch):
     # post-validator rejected the LLM output and used the template instead.
     rsi = report.technical_indicators.rsi
     assert rsi is not None
-    assert f"RSI(14) is {rsi:.2f}" in report.narrative
+    assert "RSI" in report.narrative and f"{rsi:.2f}" in report.narrative
 
 
 def test_narrate_falls_back_when_llm_omits_value(monkeypatch):
@@ -384,6 +385,139 @@ def test_narrate_accepts_compliant_llm_response(monkeypatch):
     report = analyze(_packet(closes))
     # The LLM output was preserved verbatim — no fallback substitution.
     assert report.narrative == canned_narrative
+
+
+def _stub_llm(monkeypatch, content: str) -> None:
+    """Point ChatOpenAI at a canned response and enable the LLM path."""
+    monkeypatch.setattr(analyst_module.settings, "openai_api_key", "sk-test")
+
+    class _StubLLM:
+        def __init__(self, *a, **kw):
+            pass
+
+        def invoke(self, _messages):
+            class _Result:
+                pass
+
+            r = _Result()
+            r.content = content
+            return r
+
+    import langchain_openai
+
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", _StubLLM)
+
+
+def test_narrate_rejects_llm_response_with_fabricated_number(monkeypatch):
+    """V10-01 AC4 on the live path: correct indicator values but an EXTRA
+    fabricated price must not reach the user — route to the clean fallback."""
+    from app.tools.technical import calculate_bollinger, calculate_sma
+
+    closes = _sine_closes(60)
+    rsi = calculate_rsi(closes)
+    macd = calculate_macd(closes)
+    sma = calculate_sma(closes)
+    boll = calculate_bollinger(closes)
+
+    fabricated = (
+        f"RSI(14) at {rsi:.2f} looks neutral; MACD line {macd.macd:.4f} is mild. "
+        f"SMA(20) {sma:.2f} and the Bollinger midline {boll.middle:.2f} frame it. "
+        "A reasonable support sits at $1234.56."  # not a computed value
+    )
+    _stub_llm(monkeypatch, fabricated)
+
+    report = analyze(_packet(closes))
+    # Fell back: the fabricated figure never reaches the narrative.
+    assert "1234.56" not in report.narrative
+    assert report.narrative != fabricated
+    # The deterministic fallback still anchors the real values.
+    assert f"{rsi:.2f}" in report.narrative
+
+
+def test_narrate_rejects_unanchored_sma_or_bollinger_claim(monkeypatch):
+    """V10-01 AC3 on the live path: naming SMA/Bollinger without quoting their
+    computed values is unanchored → rejected → fallback."""
+    closes = _sine_closes(60)
+    rsi = calculate_rsi(closes)
+    macd = calculate_macd(closes)
+
+    unanchored = (
+        f"RSI(14) at {rsi:.2f} is neutral and the MACD line {macd.macd:.4f} is "
+        "mild. Watch the SMA and the Bollinger bands for confirmation."  # no values
+    )
+    _stub_llm(monkeypatch, unanchored)
+
+    report = analyze(_packet(closes))
+    assert report.narrative != unanchored  # rejected for missing SMA/Bollinger values
+
+
+# ---------------------------------------------------------------------------
+# V10-01: the narrative interprets, it doesn't just restate
+# ---------------------------------------------------------------------------
+
+
+def test_narrative_explains_meaning_of_each_signal(monkeypatch):
+    """AC1: meaning, not just value — overbought RSI + momentum-bearing MACD."""
+    monkeypatch.setattr(analyst_module.settings, "openai_api_key", "")
+    indicators = TechnicalIndicators(
+        rsi=78.50,
+        macd=MACDIndicator(macd=2.0, signal=1.0, histogram=1.0),
+        sample_size=60,
+    )
+    text = narrate("AAPL", indicators, _packet([])).lower()
+    assert "overbought" in text          # what the RSI value *means*
+    assert "momentum" in text            # what the MACD reading *means*
+
+
+def test_narrative_notes_conflict_between_signals(monkeypatch):
+    """AC2: RSI overbought (bearish lean) but MACD positive (bullish) → conflict."""
+    monkeypatch.setattr(analyst_module.settings, "openai_api_key", "")
+    indicators = TechnicalIndicators(
+        rsi=78.50,
+        macd=MACDIndicator(macd=2.0, signal=1.0, histogram=1.0),
+        sample_size=60,
+    )
+    text = narrate("AAPL", indicators, _packet([]))
+    assert "78.50" in text               # anchored to the computed value
+    assert "conflict" in text.lower()
+
+
+def test_narrative_notes_agreement_when_signals_align(monkeypatch):
+    """The mirror of conflict: oversold RSI + negative MACD both lean bearish... no,
+    oversold leans bullish; pair it with a positive MACD so both agree."""
+    monkeypatch.setattr(analyst_module.settings, "openai_api_key", "")
+    indicators = TechnicalIndicators(
+        rsi=22.00,  # oversold → bullish lean
+        macd=MACDIndicator(macd=2.0, signal=1.0, histogram=1.0),  # positive → bullish
+        sample_size=60,
+    )
+    text = narrate("AAPL", indicators, _packet([]))
+    assert "oversold" in text.lower()
+    assert "agree" in text.lower()
+
+
+def test_narrative_anchors_every_value_to_computed_output(monkeypatch):
+    """AC3/AC4: each computed indicator value appears verbatim, so every claim is
+    verifiable and the narrative can't state a figure that differs from the math."""
+    monkeypatch.setattr(analyst_module.settings, "openai_api_key", "")
+    closes = _sine_closes(60)
+    report = analyze(_packet(closes))
+    ind = report.technical_indicators
+    text = report.narrative
+
+    assert ind.rsi is not None and ind.macd is not None
+    assert f"{ind.rsi:.2f}" in text
+    assert f"{ind.macd.macd:.4f}" in text
+    assert ind.sma_20 is not None and f"{ind.sma_20:.2f}" in text
+    assert ind.bollinger is not None
+    assert (
+        f"{ind.bollinger.upper:.2f}" in text or f"{ind.bollinger.lower:.2f}" in text
+    )
+    # Interprets rather than merely restating — a meaning word is present.
+    assert any(
+        w in text.lower()
+        for w in ("overbought", "oversold", "neutral", "momentum", "uptrend", "downtrend")
+    )
 
 
 # ---------------------------------------------------------------------------
