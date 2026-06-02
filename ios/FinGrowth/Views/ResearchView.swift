@@ -368,6 +368,15 @@ struct ResearchView: View {
                     }
                 }
 
+                // V10-05: a small price-vs-Bollinger-bands chart leads the
+                // evidence — a picture of where the close sits, before the
+                // numbers. Renders only when the bands are available.
+                if let bands = BollingerChartModel.make(from: final.analysis.technical) {
+                    Card(title: "Price vs. Bollinger Bands") {
+                        BollingerBandChart(point: bands)
+                    }
+                }
+
                 expandableSection(
                     title: "Technical Indicators",
                     systemImage: "chart.xyaxis.line",
