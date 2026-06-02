@@ -32,6 +32,7 @@ final class AppSettings {
     static let appearanceKey = "settings.appearance"
     static let onDeviceModelEnabledKey = "settings.on_device_model_enabled"
     static let portfolioPrivacyLevelKey = "settings.portfolio_privacy_level"
+    static let hasSeenOnboardingKey = "settings.has_seen_onboarding"
     static let defaultBackendURL = "http://localhost:8000"
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -66,6 +67,15 @@ final class AppSettings {
         }
     }
 
+    // V12-05: whether first-run onboarding (privacy model, research-not-advice
+    // framing, CSV import) has been shown. False on a fresh install so the
+    // onboarding appears once, then never again.
+    var hasSeenOnboarding: Bool {
+        didSet {
+            defaults.set(hasSeenOnboarding, forKey: Self.hasSeenOnboardingKey)
+        }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.backendURL = defaults.string(forKey: Self.backendURLKey) ?? Self.defaultBackendURL
@@ -76,6 +86,7 @@ final class AppSettings {
         let storedPrivacy = defaults.string(forKey: Self.portfolioPrivacyLevelKey)
             .flatMap(PortfolioPrivacyLevel.init(rawValue:))
         self.portfolioPrivacyLevel = storedPrivacy ?? .moderate
+        self.hasSeenOnboarding = defaults.bool(forKey: Self.hasSeenOnboardingKey)
     }
 
     func resetBackendURL() {

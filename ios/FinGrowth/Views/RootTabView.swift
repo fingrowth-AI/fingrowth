@@ -41,6 +41,14 @@ struct RootTabView: View {
             }
         }
         .animation(.easeInOut, value: gemma.thermal.warningMessage)
+        // V12-05: first-run onboarding (privacy model, research-not-advice
+        // framing, CSV import). Shown once on a fresh install, then never again.
+        .fullScreenCover(isPresented: Binding(
+            get: { !settings.hasSeenOnboarding },
+            set: { if !$0 { settings.hasSeenOnboarding = true } }
+        )) {
+            OnboardingView(settings: settings)
+        }
         .onAppear {
             if portfolioStore == nil {
                 portfolioStore = PortfolioStore(

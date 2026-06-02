@@ -103,6 +103,7 @@ struct ResearchView: View {
                                 errorBanner(message: message)
                             }
                         }
+                        researchEmptyState
                         historySection
                     }
                     .padding(.horizontal)
@@ -213,9 +214,79 @@ struct ResearchView: View {
                     }
                 }
 
+                // V12-05: example queries so a new user isn't facing a blank
+                // box. Shown while the query is empty; tapping one fills it (and
+                // the type auto-classifies, V12-04).
+                if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    exampleQueries
+                }
+
                 Text("Streams from the backend configured in Settings.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // V12-05: a guiding empty state shown before the user has any result or
+    // history — a friendly welcome plus the privacy framing, pointing at the
+    // example queries above.
+    @ViewBuilder
+    private var researchEmptyState: some View {
+        let noResult = controller?.finalResult == nil
+            && controller?.partialAnalysis == nil
+            && controller?.research == nil
+        if noResult && portfolioAnalysis == nil && history.isEmpty
+            && localOnlyMessage == nil && auditErrorMessage == nil {
+            GlassPanel {
+                VStack(alignment: .leading, spacing: 10) {
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.title.weight(.semibold))
+                        .foregroundStyle(FinTheme.accent)
+                    Text("Ask your first question")
+                        .font(.headline)
+                    Text("Type a question above, or tap an example. Your portfolio is processed "
+                        + "on-device, and you can see exactly what reaches the cloud in the "
+                        + "Privacy tab. This is research, not advice.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var exampleQueries: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Try an example", systemImage: "lightbulb")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(ResearchExamples.all) { example in
+                Button {
+                    query = example.query
+                    // Fill the ticker so single-ticker examples are runnable
+                    // immediately; portfolio-level examples (nil) need no ticker.
+                    if let exampleTicker = example.ticker { ticker = exampleTicker }
+                    autoClassifyAnalysisType(example.query)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "text.bubble")
+                            .font(.caption)
+                            .foregroundStyle(FinTheme.accent)
+                        Text(example.query)
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(FinTheme.field(for: colorScheme))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
             }
         }
     }
