@@ -41,6 +41,11 @@ struct ResearchView: View {
     @State private var submittedQuery: String = ""
     @State private var ticker: String = ""
     @State private var analysisType: AnalysisType = .technical
+    // V12-04: once the user picks the analysis type themselves, stop
+    // auto-classifying so their choice sticks. Reset when the query is cleared.
+    @State private var analysisTypeUserOverridden = false
+    // In-flight on-device classification for the current query text.
+    @State private var classificationTask: Task<Void, Never>?
     @State private var showSuggestions: Bool = false
     @State private var lastPersistedSessionID: UUID?
     // Session ID of the last-saved history entry — used to link a paper
@@ -170,15 +175,27 @@ struct ResearchView: View {
                     .padding(12)
                     .background(FinTheme.field(for: colorScheme))
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .onChange(of: query) { _, newValue in autoClassifyAnalysisType(newValue) }
 
                 tickerField
 
-                Picker("Type", selection: $analysisType) {
+                // V12-04: the type is auto-detected from the question, but a
+                // user pick through this binding marks it overridden so it sticks.
+                Picker("Type", selection: Binding(
+                    get: { analysisType },
+                    set: { analysisType = $0; analysisTypeUserOverridden = true }
+                )) {
                     ForEach(AnalysisType.allCases) { type in
                         Text(type.rawValue.capitalized).tag(type)
                     }
                 }
                 .pickerStyle(.segmented)
+
+                if !analysisTypeUserOverridden {
+                    Label("Auto-detected from your question — tap to change", systemImage: "wand.and.stars")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
 
                 HStack {
                     Button(action: run) {
@@ -262,6 +279,28 @@ struct ResearchView: View {
                 .stroke(FinTheme.border(for: colorScheme), lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    // V12-04: classify the analysis type from the query on-device and pre-select
+    // it, unless the user has overridden the picker. Clearing the query re-arms
+    // auto-detection. Runs on the deterministic floor instantly; an on-device
+    // Gemma refine only fires for ambiguous text when the model is loaded.
+    private func autoClassifyAnalysisType(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            analysisTypeUserOverridden = false
+            classificationTask?.cancel()
+            return
+        }
+        guard !analysisTypeUserOverridden else { return }
+        classificationTask?.cancel()
+        classificationTask = Task { @MainActor in
+            let type = await AnalysisTypeClassifier(gemma: gemma).classify(query: trimmed)
+            guard !Task.isCancelled, !analysisTypeUserOverridden else { return }
+            // Drop the result if the query moved on while classifying.
+            guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
+            analysisType = type
+        }
     }
 
     // V12-03: trades placed from the currently displayed result, keyed on the

@@ -10,6 +10,7 @@
 		017227379C0A585E379538CF /* PortfolioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 689E3C75F8811E1A2865F838 /* PortfolioView.swift */; };
 		0518A6766FF0807AF58B4AB0 /* ThesisOutcomeEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48B6BC6DF6919D6AA163914E /* ThesisOutcomeEngine.swift */; };
 		06D6C40760C5A4BA348B2038 /* PaperTrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAC128C6F034551CA7678D29 /* PaperTrade.swift */; };
+		0CED0374C8F1DB33C89F7E36 /* AnalysisTypeClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80AD9127F553F436D4433A7C /* AnalysisTypeClassifier.swift */; };
 		0D1DA6E5A3DA1A526DC079C0 /* APIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5949520792D80089A788B0F0 /* APIClientTests.swift */; };
 		155FCCED01561B11CA1C8211 /* ThermalMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06C4B2465AD9E4584A96CF25 /* ThermalMonitor.swift */; };
 		168A7AA780AEE5012786B61C /* CSVPrivacyParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 640CF4B2D8C426172DBBB38D /* CSVPrivacyParserTests.swift */; };
@@ -76,6 +77,7 @@
 		C330297C1A2F56BEDDB1612E /* AuthCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB68E055F08A9F93EA22431C /* AuthCoordinatorTests.swift */; };
 		C50211EAD55A7E7E3394E7E8 /* GemmaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21234ACAF306DFF1BCE8E8C9 /* GemmaService.swift */; };
 		C6CEF6F40281BE2F335438F0 /* PaperTradingClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BF1982E6D3245577A734292 /* PaperTradingClient.swift */; };
+		D18C4F87E3C2FE7F261C6EC6 /* AnalysisTypeClassifierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E01325E41481BE7B1EFCD60 /* AnalysisTypeClassifierTests.swift */; };
 		D86CF2D3AB77C18BFAA1B240 /* PaperTradeThesisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF9B82DBF842F9DA52BC61E5 /* PaperTradeThesisTests.swift */; };
 		DC932C77BA806F005036800B /* QueryRewriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E739B4C1D34CA02A016D03A /* QueryRewriterTests.swift */; };
 		DD02ADC10961637A8617FFC7 /* DataFreshnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 611522D4E51EE2F64CC630B1 /* DataFreshnessTests.swift */; };
@@ -141,6 +143,7 @@
 		48B6BC6DF6919D6AA163914E /* ThesisOutcomeEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThesisOutcomeEngine.swift; sourceTree = "<group>"; };
 		4B65300994D15D5BD64A8468 /* AuditLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditLogTests.swift; sourceTree = "<group>"; };
 		4DE69FBE300A997A0AB294EA /* DifferentialPrivacy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DifferentialPrivacy.swift; sourceTree = "<group>"; };
+		4E01325E41481BE7B1EFCD60 /* AnalysisTypeClassifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisTypeClassifierTests.swift; sourceTree = "<group>"; };
 		56CA8FBD5A4D2A5F43978972 /* PrivacyAuditLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyAuditLog.swift; sourceTree = "<group>"; };
 		5949520792D80089A788B0F0 /* APIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClientTests.swift; sourceTree = "<group>"; };
 		5D940737C50AE41B3014ADC0 /* AnalysisResultPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisResultPresenter.swift; sourceTree = "<group>"; };
@@ -154,6 +157,7 @@
 		70907220A5A69575403668B3 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		7306990456C5FEAD0D755B24 /* Recontextualizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Recontextualizer.swift; sourceTree = "<group>"; };
 		7BDC3EC27889F86113C60055 /* GemmaServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GemmaServiceTests.swift; sourceTree = "<group>"; };
+		80AD9127F553F436D4433A7C /* AnalysisTypeClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisTypeClassifier.swift; sourceTree = "<group>"; };
 		821433338CFCC2F7B5DF7551 /* AuthCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthCoordinator.swift; sourceTree = "<group>"; };
 		8BE7EC5B62AD41CA20D3F1EE /* AuditEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditEntry.swift; sourceTree = "<group>"; };
 		8BF1982E6D3245577A734292 /* PaperTradingClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperTradingClient.swift; sourceTree = "<group>"; };
@@ -187,7 +191,7 @@
 		F21182A4D3B5EB8B0761D7D2 /* AnalysisAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisAPI.swift; sourceTree = "<group>"; };
 		F93DD0A08011A8FF64F86C93 /* ResearchHistoryEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchHistoryEntry.swift; sourceTree = "<group>"; };
 		FC1B052790073B5E6CE90B81 /* ThesisOutcomeEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThesisOutcomeEngineTests.swift; sourceTree = "<group>"; };
-		"TEMP_75962FB8-CFA9-486D-B3DA-8058320ED11F" /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		"TEMP_514F9E74-8356-48BD-A887-BD0E4D2C4696" /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -259,6 +263,7 @@
 				627ED715EC6D3480D475CCE2 /* AnalysisResultPresenterTests.swift */,
 				1B26674A1FB435D9B0752EE2 /* AnalysisStreamControllerTests.swift */,
 				38DB8244974B3A40E9F5182B /* AnalysisTradeLinkTests.swift */,
+				4E01325E41481BE7B1EFCD60 /* AnalysisTypeClassifierTests.swift */,
 				5949520792D80089A788B0F0 /* APIClientTests.swift */,
 				6F031E428CF3CEB5CB565941 /* AppShellTests.swift */,
 				4B65300994D15D5BD64A8468 /* AuditLogTests.swift */,
@@ -313,6 +318,7 @@
 				5D940737C50AE41B3014ADC0 /* AnalysisResultPresenter.swift */,
 				05A9DADCFCE177368B1D4009 /* AnalysisStreamController.swift */,
 				B822C1BF036ECBDE5870F2A5 /* AnalysisTradeLink.swift */,
+				80AD9127F553F436D4433A7C /* AnalysisTypeClassifier.swift */,
 				25D5EBDB1E1B6F604AE23AEE /* APIClient.swift */,
 				A923754A966D1F83FC931DB6 /* AppContainer.swift */,
 				0A342BC6A3B65965BF13E067 /* AppDataLocation.swift */,
@@ -342,10 +348,10 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
-		"TEMP_5BB6FB82-233D-4014-BF69-A15888223F50" /* ios */ = {
+		"TEMP_DF7E13C7-467B-437B-85F8-7C3A74EE23EE" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_75962FB8-CFA9-486D-B3DA-8058320ED11F" /* Signing.xcconfig */,
+				"TEMP_514F9E74-8356-48BD-A887-BD0E4D2C4696" /* Signing.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -437,6 +443,7 @@
 				6CB6DC99932DC70BDB6C595E /* AnalysisResultPresenterTests.swift in Sources */,
 				8B6634E00185D95DE8DB3255 /* AnalysisStreamControllerTests.swift in Sources */,
 				A643978338B6EFD60242AFD9 /* AnalysisTradeLinkTests.swift in Sources */,
+				D18C4F87E3C2FE7F261C6EC6 /* AnalysisTypeClassifierTests.swift in Sources */,
 				EA762041EAE594693C5B7818 /* AppShellTests.swift in Sources */,
 				AF23C86D9858C8DB00292228 /* AuditLogTests.swift in Sources */,
 				A287814C261846B81DC4155B /* AuthClientTests.swift in Sources */,
@@ -472,6 +479,7 @@
 				7BCF77628712A0986CE43637 /* AnalysisResultPresenter.swift in Sources */,
 				85D9A701ACEBA79B433981A1 /* AnalysisStreamController.swift in Sources */,
 				85CDC57911615655D9E13BAF /* AnalysisTradeLink.swift in Sources */,
+				0CED0374C8F1DB33C89F7E36 /* AnalysisTypeClassifier.swift in Sources */,
 				7050B3EE3264EA5005514FCA /* App.swift in Sources */,
 				2DADB09D4616C1629DA77421 /* AppContainer.swift in Sources */,
 				796ECDBBF04F1E7F80F4F800 /* AppDataLocation.swift in Sources */,
@@ -529,7 +537,7 @@
 /* Begin XCBuildConfiguration section */
 		342022D507C6E6CE02FCAE6F /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_75962FB8-CFA9-486D-B3DA-8058320ED11F" /* Signing.xcconfig */;
+			baseConfigurationReference = "TEMP_514F9E74-8356-48BD-A887-BD0E4D2C4696" /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
@@ -732,7 +740,7 @@
 		};
 		EDF1E69E96337CEEEE594C6C /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_75962FB8-CFA9-486D-B3DA-8058320ED11F" /* Signing.xcconfig */;
+			baseConfigurationReference = "TEMP_514F9E74-8356-48BD-A887-BD0E4D2C4696" /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
