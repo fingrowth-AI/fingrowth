@@ -111,6 +111,106 @@ final class DifferentialPrivacyTests: XCTestCase {
         XCTAssertEqual(generalized.largestPosition, "concentrated")  // AAPL ~90%
     }
 
+    // MARK: - V9-03: query-scoped context
+
+    // TSLA is ~98.9% of value (concentrated); AAPL a small sliver. Carries
+    // identity so the no-leak test has something to catch.
+    private func ledgerWithIdentity() -> PrivateLedger {
+        PrivateLedger(
+            accountName: "Brokerage",
+            accountNumber: "X12345678",
+            accountHolder: "Jane Q Public",
+            holdings: [
+                LedgerHolding(ticker: "TSLA", quantity: 500, costBasis: 280),
+                LedgerHolding(ticker: "AAPL", quantity: 10, costBasis: 150),
+            ]
+        )
+    }
+
+    func testSingleTickerQueryScopesToThatHolding() {
+        // AC1: a single-ticker query sends only that holding's specifics + minimal
+        // context — not the whole-portfolio sector breakdown.
+        let ctx = DifferentialPrivacy.scopedContext(
+            query: "Should I sell my 500 shares of TSLA?",
+            ledger: ledgerWithIdentity(),
+            profile: techAndBondsProfile(),
+            privacyLevel: .moderate
+        )
+        XCTAssertEqual(ctx.focus?.count, 1)               // only the named holding
+        XCTAssertEqual(ctx.focus?.first?.ticker, "TSLA")
+        XCTAssertEqual(ctx.focus?.first?.sector, "consumer_discretionary")
+        XCTAssertEqual(ctx.focus?.first?.positionSize, "concentrated")
+        XCTAssertTrue(ctx.sectorWeights.isEmpty)          // breakdown withheld
+        XCTAssertEqual(ctx.diversification, "low")        // minimal context only
+    }
+
+    func testPortfolioLevelQuerySendsSectorsNotPositions() {
+        // AC2: a portfolio-level query sends sector weights + concentration, not
+        // per-position focus.
+        let ctx = DifferentialPrivacy.scopedContext(
+            query: "Is my portfolio too tech-heavy?",
+            ledger: ledgerWithIdentity(),
+            profile: techAndBondsProfile(),
+            privacyLevel: .moderate
+        )
+        XCTAssertNil(ctx.focus)
+        XCTAssertEqual(ctx.sectorWeights["tech"], 75)
+        XCTAssertEqual(ctx.diversification, "low")
+    }
+
+    func testScopedContextNeverLeaksIdentity() throws {
+        // AC3: no Tier 1 identity in the outbound payload (what the audit records).
+        let ctx = DifferentialPrivacy.scopedContext(
+            query: "How are my 500 shares of TSLA doing?",
+            ledger: ledgerWithIdentity(),
+            profile: techAndBondsProfile(),
+            privacyLevel: .detailed
+        )
+        let json = String(data: try JSONEncoder().encode(ctx), encoding: .utf8) ?? ""
+        for identity in ["X12345678", "Jane", "Public"] {
+            XCTAssertFalse(json.contains(identity), "leaked identity: \(identity)")
+        }
+        XCTAssertTrue(json.contains("TSLA"), "tier 2 ticker is allowed")
+    }
+
+    func testFocusAggregatesDuplicateLotsByTicker() {
+        // V9-03 guard: a multi-lot holding must collapse to one focus entry with
+        // the combined position size — not per-row structure, not an understated
+        // bucket. Two TSLA lots of 25% each → one TSLA at the 50% (concentrated)
+        // bucket; AAPL fills the rest but isn't in the question.
+        let ledger = PrivateLedger(
+            accountName: "Brokerage",
+            holdings: [
+                LedgerHolding(ticker: "TSLA", quantity: 25, costBasis: 100),  // $2,500
+                LedgerHolding(ticker: "TSLA", quantity: 25, costBasis: 100),  // $2,500 (2nd lot)
+                LedgerHolding(ticker: "AAPL", quantity: 50, costBasis: 100),  // $5,000
+            ]
+        )
+        let ctx = DifferentialPrivacy.scopedContext(
+            query: "Should I sell TSLA?",
+            ledger: ledger,
+            profile: techAndBondsProfile(),
+            privacyLevel: .moderate
+        )
+        XCTAssertEqual(ctx.focus?.count, 1, "duplicate lots must collapse to one entry")
+        XCTAssertEqual(ctx.focus?.first?.ticker, "TSLA")
+        // 5,000 / 10,000 = 50% → concentrated, not the per-lot 25% (large).
+        XCTAssertEqual(ctx.focus?.first?.positionSize, "concentrated")
+    }
+
+    func testFocusedTickersMatchesHeldWholeWordOnly() {
+        let held = [
+            LedgerHolding(ticker: "TSLA", quantity: 1, costBasis: 1),
+            LedgerHolding(ticker: "V", quantity: 1, costBasis: 1),
+        ]
+        XCTAssertEqual(DifferentialPrivacy.focusedTickers(in: "sell TSLA now", held: held), ["TSLA"])
+        // Whole-word: "V" must not match inside "Value".
+        XCTAssertTrue(DifferentialPrivacy.focusedTickers(in: "Value investing tips", held: held).isEmpty)
+        XCTAssertEqual(DifferentialPrivacy.focusedTickers(in: "is V a buy?", held: held), ["V"])
+        // An unheld symbol pulls in no portfolio data.
+        XCTAssertTrue(DifferentialPrivacy.focusedTickers(in: "what about NVDA?", held: held).isEmpty)
+    }
+
     func testPrivacyLevelPersistsInSettings() {
         let suite = "DiffPrivacyTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

@@ -326,6 +326,36 @@ async def test_portfolio_profile_influences_narrative(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_query_scoped_focus_reaches_the_analyst(client: AsyncClient):
+    """V9-03: a focused query ships its query-relevant holding(s) in the profile
+    `focus` field, and the deterministic fallback surfaces them — proving the
+    scoped context reaches the analyst without depending on a live model."""
+    _s, _ct, events = await _collect_events(
+        client,
+        {
+            "query": "Should I sell my 500 shares of TSLA?",
+            "ticker": "TSLA",
+            "analysis_type": "technical",
+            "portfolio_profile": {
+                "diversification": "low",
+                "focus": [
+                    {
+                        "ticker": "TSLA",
+                        "sector": "consumer_discretionary",
+                        "position_size": "concentrated",
+                    }
+                ],
+            },
+        },
+    )
+    final = next(e for e in events if e["event"] == "final_result")
+    narrative = final["data"]["analysis"]["narrative"]
+    assert "Portfolio context" in narrative
+    assert "TSLA" in narrative
+    assert "concentrated" in narrative
+
+
+@pytest.mark.asyncio
 async def test_omitted_portfolio_profile_produces_no_context_clause(
     client: AsyncClient,
 ):

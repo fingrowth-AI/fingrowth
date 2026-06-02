@@ -138,6 +138,19 @@ def _portfolio_context_sentence(
     if not portfolio_profile:
         return None
     bits: list[str] = []
+    # V9-03: a focused (single/specific-ticker) query carries the query-relevant
+    # holdings instead of a portfolio-wide breakdown. Surface them first — they
+    # are the most directly relevant context. Tier 2 only (ticker / sector /
+    # size bucket); never identity.
+    focus = portfolio_profile.get("focus")
+    if focus:
+        named = ", ".join(
+            f"{f.get('ticker')} ({f.get('sector')}, {f.get('position_size')})"
+            for f in focus
+            if isinstance(f, dict) and f.get("ticker")
+        )
+        if named:
+            bits.append(f"holding {named}")
     risk = portfolio_profile.get("risk_orientation")
     div = portfolio_profile.get("diversification")
     largest = portfolio_profile.get("largest_position")

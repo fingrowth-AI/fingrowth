@@ -47,6 +47,10 @@ struct GeneralizedProfile: Codable, Equatable, Sendable {
     // detailed+: generalized risk metrics.
     let riskScore: Double?
     let valueBucket: String?
+    // V9-03: query-scoped focus holdings. Populated only for a focused query
+    // (one or more held tickers named in the question); nil for a portfolio-level
+    // question, where `sectorWeights` carries the context instead.
+    var focus: [FocusContext]? = nil
 }
 
 enum DifferentialPrivacy {
@@ -85,6 +89,89 @@ enum DifferentialPrivacy {
                 valueBucket: profile.totalValueBucket
             )
         }
+    }
+
+    // MARK: - Query-scoped context (V9-03)
+
+    // Scope the outbound portfolio context to the question instead of always
+    // shipping one fixed profile:
+    //
+    //   * Focused query (names one or more *held* tickers): send just those
+    //     holdings' tier-2 specifics (ticker, generalized sector, position-size
+    //     bucket) plus minimal context (overall diversification). The exact
+    //     ticker + share count already ride in the rewritten query text (V9-02),
+    //     so the whole-portfolio sector breakdown is withheld — only the
+    //     query-relevant subset of the ledger leaves.
+    //   * Portfolio-level query (no held ticker named): the existing
+    //     sector-weights + concentration profile.
+    //
+    // Identity is never included in either branch — the result is built from
+    // sectors / sizes / public tickers, never from the ledger's account number
+    // or holder. Deterministic and PII-free like `generalize`.
+    static func scopedContext(
+        query: String,
+        ledger: PrivateLedger?,
+        profile: ShareableProfile,
+        privacyLevel: PortfolioPrivacyLevel
+    ) -> GeneralizedProfile {
+        let holdings = (ledger?.holdings ?? []).filter { $0.quantity > 0 }
+        let focusTickers = focusedTickers(in: query, held: holdings)
+
+        // No specific holding in question → portfolio-level context as before.
+        guard !focusTickers.isEmpty else {
+            return generalize(profile: profile, privacyLevel: privacyLevel)
+        }
+
+        let totalValue = holdings.reduce(0) { $0 + $1.quantity * $1.costBasis }
+        // Aggregate lots by ticker first: a multi-lot holding is ONE focus entry
+        // with the combined position size, never per-row structure. Sending two
+        // TSLA rows would leak the lot layout and understate concentration
+        // (V9-03 scoping guard).
+        var valueByTicker: [String: Double] = [:]
+        for holding in holdings where focusTickers.contains(holding.ticker.uppercased()) {
+            valueByTicker[holding.ticker.uppercased(), default: 0] += holding.quantity * holding.costBasis
+        }
+        let focus = valueByTicker.keys.sorted().map { ticker -> FocusContext in
+            let percent = totalValue > 0 ? (valueByTicker[ticker] ?? 0) / totalValue * 100 : 0
+            return FocusContext(
+                ticker: ticker,
+                sector: category(for: SectorClassifier.sector(for: ticker)),
+                positionSize: positionBucket(forPercent: percent)
+            )
+        }
+
+        // Minimal context: overall diversification (moderate+ only). The whole
+        // portfolio's sector weights, value band, and risk score are deliberately
+        // omitted — they're not relevant to a single-holding question.
+        let categories = aggregateByCategory(decodeWeights(profile.sectorWeightsJSON))
+        let diversification = privacyLevel == .minimal ? nil : diversificationLevel(categories)
+
+        return GeneralizedProfile(
+            privacyLevel: privacyLevel,
+            sectorWeights: [:],
+            largestPosition: nil,
+            diversification: diversification,
+            riskScore: nil,
+            valueBucket: nil,
+            focus: focus
+        )
+    }
+
+    // Held tickers named in the query, matched whole-word and case-insensitively
+    // so "Value investing" never trips the ticker "V". Restricting to *held*
+    // tickers means an unrelated symbol in the text can't pull in portfolio data.
+    static func focusedTickers(in query: String, held: [LedgerHolding]) -> Set<String> {
+        let upper = query.uppercased()
+        var found: Set<String> = []
+        for holding in held {
+            let ticker = holding.ticker.uppercased()
+            guard !ticker.isEmpty else { continue }
+            let pattern = "\\b" + NSRegularExpression.escapedPattern(for: ticker) + "\\b"
+            if upper.range(of: pattern, options: .regularExpression) != nil {
+                found.insert(ticker)
+            }
+        }
+        return found
     }
 
     // MARK: - Position-size buckets (design §P5-05)

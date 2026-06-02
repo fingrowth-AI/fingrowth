@@ -33,11 +33,23 @@ final class PrivacyAuditLog {
         // stable order for display.
         let piiDetected = orderedUniqueTypes(substitutions)
 
+        // V9-03: the outbound payload is the rewritten query *and* the scoped
+        // portfolio profile. Digest both so the log attests to everything that
+        // leaves the device — not just the query text — and describe the shared
+        // context in the summary so the user can see what portfolio data went
+        // out (Tier 2 only; identity never reaches here).
+        let profileJSON = profile.flatMap(Self.canonicalProfileJSON)
+        let payload = profileJSON.map { "\(rewritten)\u{1e}\($0)" } ?? rewritten
+        let redaction = substitutions.isEmpty
+            ? "No PII detected"
+            : "\(substitutions.count) item(s) redacted"
+        let summary = Self.contextSummary(profile).map { "\(redaction); \($0)" } ?? redaction
+
         let entry = AuditEntry(
             endpoint: endpoint,
             direction: "outbound",
-            payloadDigest: Self.sha256(rewritten),
-            summary: substitutions.isEmpty ? "No PII detected" : "\(substitutions.count) item(s) redacted",
+            payloadDigest: Self.sha256(payload),
+            summary: summary,
             originalQuery: original,
             rewrittenQuery: rewritten,
             substitutionsJSON: Self.encode(substitutions),
@@ -82,6 +94,29 @@ final class PrivacyAuditLog {
     private static func encode<T: Encodable>(_ value: T) -> String? {
         guard let data = try? JSONEncoder().encode(value) else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    // Canonical (sorted-key) JSON of the shared profile so the same context
+    // always digests identically. This is the portfolio half of the outbound
+    // payload (V9-03).
+    private static func canonicalProfileJSON(_ profile: GeneralizedProfile) -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(profile) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    // A human-readable description of the portfolio context shared with the
+    // cloud, for the Privacy tab. Tier 2 only: focus tickers or "sector weights".
+    private static func contextSummary(_ profile: GeneralizedProfile?) -> String? {
+        guard let profile else { return nil }
+        if let focus = profile.focus, !focus.isEmpty {
+            return "shared context: holdings " + focus.map(\.ticker).joined(separator: ", ")
+        }
+        if !profile.sectorWeights.isEmpty {
+            return "shared context: sector weights"
+        }
+        return "shared context: portfolio profile"
     }
 
     private static func sha256(_ text: String) -> String {

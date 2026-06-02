@@ -103,6 +103,34 @@ final class PrivacyAuditLogTests: XCTestCase {
         XCTAssertEqual(entry.payloadDigest.count, 64)
     }
 
+    func testPayloadDigestCoversPortfolioProfileAndSummaryShowsContext() throws {
+        // V9-03: the audit must attest to the *whole* outbound payload, not just
+        // the query — otherwise it couldn't verify what portfolio context was sent.
+        let context = try makeContext()
+        let log = PrivacyAuditLog(context: context)
+        let sent = "How are my 500 shares of TSLA doing?"
+
+        func focusProfile(ticker: String) -> GeneralizedProfile {
+            GeneralizedProfile(
+                privacyLevel: .moderate, sectorWeights: [:], largestPosition: nil,
+                diversification: "low", riskScore: nil, valueBucket: nil,
+                focus: [FocusContext(ticker: ticker, sector: "consumer_discretionary",
+                                     positionSize: "concentrated")]
+            )
+        }
+
+        let queryOnly = try log.record(original: "o", rewritten: sent, profile: nil, substitutions: [])
+        let withTSLA = try log.record(original: "o", rewritten: sent, profile: focusProfile(ticker: "TSLA"), substitutions: [])
+        let withNVDA = try log.record(original: "o", rewritten: sent, profile: focusProfile(ticker: "NVDA"), substitutions: [])
+
+        // Same query text, but the digest now changes with the profile — proof
+        // it covers the portfolio payload, not just the query.
+        XCTAssertNotEqual(queryOnly.payloadDigest, withTSLA.payloadDigest)
+        XCTAssertNotEqual(withTSLA.payloadDigest, withNVDA.payloadDigest)
+        // And the user can see which holding's context was shared.
+        XCTAssertTrue(withTSLA.summary.contains("TSLA"))
+    }
+
     func testEntriesAreReverseChronological() throws {
         let context = try makeContext()
         // Insert with explicit timestamps (mirrors the Privacy tab's @Query sort).

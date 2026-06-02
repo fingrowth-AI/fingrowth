@@ -583,8 +583,13 @@ struct ResearchView: View {
             // query. When no ShareableProfile exists yet, the call still goes
             // out — without profile context — so the user isn't blocked on
             // having imported a CSV.
+            // V9-03: scope the portfolio context to the question — a query about
+            // a held ticker sends just that holding's specifics + minimal
+            // context; a portfolio-level question sends sector weights.
             let generalized: GeneralizedProfile? = (intent == .hybrid && profile != nil)
-                ? DifferentialPrivacy.generalize(profile: profile!, privacyLevel: privacyLevel)
+                ? DifferentialPrivacy.scopedContext(
+                    query: rawQuery, ledger: ledger, profile: profile!, privacyLevel: privacyLevel
+                )
                 : nil
 
             // Record exactly one audit entry of what is actually sent. Recording
@@ -623,7 +628,8 @@ struct ResearchView: View {
             sectorWeights: generalized.sectorWeights,
             largestPosition: generalized.largestPosition,
             diversification: generalized.diversification,
-            riskOrientation: generalized.riskScore.map(riskOrientationLabel)
+            riskOrientation: generalized.riskScore.map(riskOrientationLabel),
+            focus: generalized.focus
         )
     }
 

@@ -10,11 +10,23 @@ enum AnalysisType: String, Codable, Sendable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+// V9-03: a single query-relevant holding, scoped to the question. Tier 2 only
+// (ticker + generalized sector + position-size bucket) — never identity, never
+// exact value.
+struct FocusContext: Codable, Sendable, Equatable, Hashable {
+    var ticker: String
+    var sector: String
+    var positionSize: String
+}
+
 struct PortfolioProfile: Codable, Sendable, Equatable, Hashable {
     var sectorWeights: [String: Double] = [:]
     var largestPosition: String?
     var diversification: String?
     var riskOrientation: String?
+    // V9-03: populated for a focused (single/specific-ticker) query; nil for a
+    // portfolio-level question, which instead carries sectorWeights.
+    var focus: [FocusContext]?
 }
 
 struct AnalysisQuery: Codable, Sendable, Equatable {

@@ -31,6 +31,18 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+class FocusContext(BaseModel):
+    """One query-relevant holding (V9-03), Tier 2 only — never identity.
+
+    Sent for a focused (single/specific-ticker) query so the analyst can speak to
+    that holding directly; the exact share count rides in the rewritten query.
+    """
+
+    ticker: str
+    sector: str
+    position_size: str
+
+
 class PortfolioProfile(BaseModel):
     """Anonymized portfolio context sent from the iOS client via DifferentialPrivacy."""
 
@@ -38,6 +50,9 @@ class PortfolioProfile(BaseModel):
     largest_position: str | None = None
     diversification: str | None = None
     risk_orientation: str | None = None
+    # V9-03: query-scoped focus holdings. Present for a focused query; for a
+    # portfolio-level query the context is in ``sector_weights`` instead.
+    focus: list[FocusContext] | None = None
 
 
 class DataFreshness(BaseModel):
