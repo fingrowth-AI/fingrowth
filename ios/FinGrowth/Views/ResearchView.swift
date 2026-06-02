@@ -30,6 +30,11 @@ struct ResearchView: View {
     // controller.start (which flips isRunning) only happens after the awaits.
     @State private var routingTask: Task<Void, Never>?
     @State private var query: String = ""
+    // V10-02: the question that produced the currently-displayed result, captured
+    // when the stream starts. The `query` field stays editable after Run, so the
+    // result's plain-language lead must address what was *submitted*, not whatever
+    // the user has since typed.
+    @State private var submittedQuery: String = ""
     @State private var ticker: String = ""
     @State private var analysisType: AnalysisType = .technical
     @State private var showSuggestions: Bool = false
@@ -350,27 +355,25 @@ struct ResearchView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+
+                        // V10-02: lead with a short, plain-language conclusion that
+                        // answers the question. Indicators move below as expandable
+                        // evidence — the result never opens on a number dump.
+                        Text(AnalysisResultPresenter.leadAssessment(
+                            narrative: final.analysis.narrative, query: submittedQuery
+                        ))
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
                     }
                 }
 
                 expandableSection(
                     title: "Technical Indicators",
                     systemImage: "chart.xyaxis.line",
-                    initiallyExpanded: true
+                    initiallyExpanded: AnalysisResultPresenter.indicatorsInitiallyExpanded
                 ) {
                     TechnicalIndicatorsView(indicators: final.analysis.technical)
-                }
-
-                expandableSection(
-                    title: "Summary",
-                    systemImage: "text.alignleft",
-                    initiallyExpanded: true
-                ) {
-                    Text(final.analysis.narrative.isEmpty
-                         ? "(no narrative returned)"
-                         : final.analysis.narrative)
-                        .font(.body)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 expandableSection(
@@ -616,6 +619,10 @@ struct ResearchView: View {
                 ticker: tickerSymbol,
                 analysisType: type
             )
+            // Pin the submitted question to this result as the stream begins
+            // (start() clears the prior finalResult), so the lead assessment is
+            // framed against the question actually asked — not a later edit.
+            submittedQuery = rawQuery
             controller?.start(query: request, profile: generalized.map(Self.wireProfile))
         }
     }
