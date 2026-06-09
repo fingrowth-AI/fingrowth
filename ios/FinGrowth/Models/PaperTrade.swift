@@ -31,28 +31,24 @@ struct BrokerPosition: Codable, Sendable, Equatable, Identifiable, Hashable {
     var id: String { symbol }
 }
 
-struct BenchmarkPoint: Codable, Sendable, Equatable, Hashable {
-    var date: String  // yyyy-mm-dd
-    var close: Double
-}
-
-struct BenchmarkSeries: Codable, Sendable, Equatable {
-    var symbol: String
-    var points: [BenchmarkPoint]
-}
-
-// Account equity over time from /api/v1/paper/portfolio-history. Drives the
-// Performance tracker (P4-04): because equity already folds in realised P/L
-// from closed positions, the curve never loses a completed trade the way a
-// sum-of-open-positions snapshot did.
-struct PortfolioHistoryPoint: Codable, Sendable, Equatable, Hashable {
+// One day of the per-user equity curve aligned to the benchmark, from
+// /api/v1/paper/performance (V8-04). The backend reconstructs equity from the
+// user's own trade log and virtual cash — never Alpaca's account-level
+// history — and samples it on the benchmark's trading days, so the two series
+// overlay on one chart. Returns are cumulative fractions vs. the window's
+// first day (0.05 == +5%); realized P/L is carried forward, so closed trades
+// stay in the curve.
+struct PerformancePoint: Codable, Sendable, Equatable, Hashable {
     var date: String  // yyyy-mm-dd
     var equity: Double
+    var portfolioReturn: Double
+    var benchmarkReturn: Double
 }
 
-struct PortfolioHistorySeries: Codable, Sendable, Equatable {
-    var baseValue: Double
-    var points: [PortfolioHistoryPoint]
+struct PerformanceComparison: Codable, Sendable, Equatable {
+    var benchmarkSymbol: String
+    var baseEquity: Double
+    var points: [PerformancePoint]
 }
 
 // MARK: - SwiftData record

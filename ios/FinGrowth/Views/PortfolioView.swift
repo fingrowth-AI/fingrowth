@@ -660,6 +660,14 @@ private struct PerformanceSection: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
+        // The curve is best-effort on the shared refresh; if it was missing
+        // (e.g. a rate-limited benchmark), retry when the user actually opens
+        // the Performance section instead of waiting for a manual refresh.
+        .task {
+            if store.performance == nil, !store.isLoading {
+                await store.refresh()
+            }
+        }
     }
 
     private struct PerformanceSeries {
@@ -902,55 +910,34 @@ private struct PerformanceSection: View {
         }
     }
 
-    // Builds the chart from Alpaca's server-backed portfolio history: each
-    // point is account *equity*, which already folds in realized P/L from
-    // closed positions, so a completed trade never drops off the curve. Equity
-    // is expressed as a cumulative return against the window's base value. The
-    // SPY line is normalized to its close on/after the portfolio's first date
-    // so both series start at 0% on the same baseline.
+    // V8-04: the chart binds to the backend's per-user performance series —
+    // equity reconstructed from the user's own trade log (realized P/L carried
+    // forward, so closed trades never drop off the curve) sampled on the
+    // benchmark's trading days. Both returns arrive pre-baselined to the
+    // window's first day, so the portfolio and SPY lines share one axis.
     private var chartData: PerformanceSeries? {
-        guard let history = store.portfolioHistory, !history.points.isEmpty else { return nil }
+        guard let performance = store.performance, !performance.points.isEmpty else { return nil }
 
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withFullDate]
 
-        let datedEquity: [(date: Date, equity: Double)] = history.points.compactMap { p in
-            guard let date = formatter.date(from: p.date) else { return nil }
-            return (date, p.equity)
+        var portfolio: [ReturnPoint] = []
+        var benchmark: [ReturnPoint] = []
+        for point in performance.points {
+            guard let date = formatter.date(from: point.date) else { continue }
+            portfolio.append(ReturnPoint(
+                date: date,
+                returnPct: point.portfolioReturn * 100,
+                equity: point.equity
+            ))
+            benchmark.append(ReturnPoint(
+                date: date,
+                returnPct: point.benchmarkReturn * 100,
+                equity: nil
+            ))
         }
-        guard let baselineDate = datedEquity.first?.date else { return nil }
-        // Prefer Alpaca's reported base_value; fall back to the first equity
-        // sample if it's missing/zero.
-        let baseEquity = history.baseValue > 0 ? history.baseValue : datedEquity.first?.equity ?? 0
-        guard baseEquity > 0 else { return nil }
-        let portfolioCurve = datedEquity.map {
-            ReturnPoint(
-                date: $0.date,
-                returnPct: ($0.equity / baseEquity - 1) * 100,
-                equity: $0.equity
-            )
-        }
-
-        var benchPoints: [ReturnPoint] = []
-        if let benchmark = store.benchmark, !benchmark.points.isEmpty {
-            let dated: [(Date, Double)] = benchmark.points.compactMap { p in
-                guard let date = formatter.date(from: p.date) else { return nil }
-                return (date, p.close)
-            }
-            if let baseline = dated.first(where: { $0.0 >= baselineDate })?.1 ?? dated.last?.1,
-               baseline > 0 {
-                benchPoints = dated
-                    .filter { $0.0 >= baselineDate }
-                    .map {
-                        ReturnPoint(
-                            date: $0.0,
-                            returnPct: ($0.1 / baseline - 1) * 100,
-                            equity: nil
-                        )
-                    }
-            }
-        }
-        return PerformanceSeries(portfolio: portfolioCurve, benchmark: benchPoints)
+        guard !portfolio.isEmpty else { return nil }
+        return PerformanceSeries(portfolio: portfolio, benchmark: benchmark)
     }
 
     private var allocationData: [PositionAllocation] {
@@ -993,10 +980,10 @@ private struct PerformanceSection: View {
 
     private var emptyChartMessage: String {
         if case .failed(let message) = store.loadState { return message }
-        if store.portfolioHistory == nil {
-            return "Performance history is momentarily unavailable. Pull to refresh to try again."
+        if store.performance == nil {
+            return "Performance data is momentarily unavailable. Pull to refresh to try again."
         }
-        return "Place a paper trade and your account equity vs SPY will appear here."
+        return "Place a paper trade and your equity curve vs SPY will appear here."
     }
 
     private var totalMarketValue: Double? {

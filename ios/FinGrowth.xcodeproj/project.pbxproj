@@ -194,12 +194,12 @@
 		DD5921AC7CC0A5588C3F919E /* LlamaInferenceBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LlamaInferenceBackend.swift; sourceTree = "<group>"; };
 		E640E6EECDD28A3251E83C82 /* DifferentialPrivacyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DifferentialPrivacyTests.swift; sourceTree = "<group>"; };
 		E75C97D6138D6CCF987AF76F /* SessionStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreTests.swift; sourceTree = "<group>"; };
-		E79FE88A3DA6BDB5D94114ED /* FinGrowth.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FinGrowth.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E79FE88A3DA6BDB5D94114ED /* FinGrowth.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FinGrowth.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EE9E29459E39FDDE789D1BC8 /* ModelDownloadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloadView.swift; sourceTree = "<group>"; };
 		F21182A4D3B5EB8B0761D7D2 /* AnalysisAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisAPI.swift; sourceTree = "<group>"; };
 		F93DD0A08011A8FF64F86C93 /* ResearchHistoryEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchHistoryEntry.swift; sourceTree = "<group>"; };
 		FC1B052790073B5E6CE90B81 /* ThesisOutcomeEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThesisOutcomeEngineTests.swift; sourceTree = "<group>"; };
-		"TEMP_4D69A935-F77A-41A3-A88C-813A733F3A9A" /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		"TEMP_D42FD355-B978-4216-9749-6FFD87F40071" /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -214,6 +214,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		14420E5E2FD2FB030010F1CD /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				"TEMP_D42FD355-B978-4216-9749-6FFD87F40071" /* Signing.xcconfig */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
 		46D6D6AEEB94616023D3A3E1 /* Models */ = {
 			isa = PBXGroup;
 			children = (
@@ -264,6 +272,7 @@
 				8A6D7213A1950F83E5D87B76 /* Tests */,
 				E11747BE072A02E3072FDB17 /* Frameworks */,
 				4BA60118DC2B86002E82CFB5 /* Products */,
+				14420E5E2FD2FB030010F1CD /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -358,14 +367,6 @@
 				0234483FDC89D5CE5558F536 /* TickerCatalog.swift */,
 			);
 			path = Services;
-			sourceTree = "<group>";
-		};
-		"TEMP_A92C3C1B-6656-4CF3-8DCA-BFCE0C896079" /* ios */ = {
-			isa = PBXGroup;
-			children = (
-				"TEMP_4D69A935-F77A-41A3-A88C-813A733F3A9A" /* Signing.xcconfig */,
-			);
-			path = ios;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -553,14 +554,15 @@
 /* Begin XCBuildConfiguration section */
 		342022D507C6E6CE02FCAE6F /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_4D69A935-F77A-41A3-A88C-813A733F3A9A" /* Signing.xcconfig */;
+			baseConfigurationReference = "TEMP_D42FD355-B978-4216-9749-6FFD87F40071" /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
-				CODE_SIGN_ENTITLEMENTS = FinGrowth/FinGrowth.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(FINGROWTH_CODE_SIGN_ENTITLEMENTS)";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V2MY29MCXZ;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"vendor/llama.cpp/build-apple\"",
@@ -756,14 +758,15 @@
 		};
 		EDF1E69E96337CEEEE594C6C /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_4D69A935-F77A-41A3-A88C-813A733F3A9A" /* Signing.xcconfig */;
+			baseConfigurationReference = "TEMP_D42FD355-B978-4216-9749-6FFD87F40071" /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
-				CODE_SIGN_ENTITLEMENTS = FinGrowth/FinGrowth.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(FINGROWTH_CODE_SIGN_ENTITLEMENTS)";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V2MY29MCXZ;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"vendor/llama.cpp/build-apple\"",

@@ -20,8 +20,10 @@ final class PortfolioStore {
 
     private(set) var positions: [BrokerPosition] = []
     private(set) var orders: [BrokerOrder] = []
-    private(set) var benchmark: BenchmarkSeries?
-    private(set) var portfolioHistory: PortfolioHistorySeries?
+    // V8-04: the user's equity curve vs SPY, recomputed by the backend from the
+    // user's own trade log on every refresh — so placing or closing a paper
+    // trade updates the Performance chart without an app restart.
+    private(set) var performance: PerformanceComparison?
     private(set) var loadState: LoadState = .idle
     private(set) var lastRefreshedAt: Date?
     var submitError: String?
@@ -41,9 +43,9 @@ final class PortfolioStore {
     func refresh(benchmarkDays: Int = 30) async {
         loadState = .loading
         // Positions + orders are the critical path — a failure there means
-        // Holdings/Orders can't render. The benchmark is best-effort: Alpha
-        // Vantage's free tier rate-limits aggressively, and that shouldn't
-        // bring down the rest of the tab.
+        // Holdings/Orders can't render. The performance curve is best-effort:
+        // its benchmark leg rides Alpha Vantage's aggressively rate-limited
+        // free tier, and that shouldn't bring down the rest of the tab.
         do {
             async let positionsFetch = client.listPositions()
             async let ordersFetch = client.listOrders(limit: 100, status: "all")
@@ -60,18 +62,10 @@ final class PortfolioStore {
             loadState = .failed(message: error.localizedDescription)
             return
         }
-        // Performance inputs are best-effort: Alpha Vantage rate-limits the
-        // benchmark aggressively, and a portfolio-history hiccup shouldn't take
-        // down Holdings/Orders. Each falls back to its own empty state.
-        do {
-            benchmark = try await client.benchmark(symbol: "SPY", days: benchmarkDays)
-        } catch {
-            benchmark = nil
-        }
-        do {
-            portfolioHistory = try await client.portfolioHistory(period: "1M", timeframe: "1D")
-        } catch {
-            portfolioHistory = nil
+        // V8-04: per-user equity vs SPY in one aligned series. A failure keeps
+        // the previous curve rather than blanking the chart mid-session.
+        if let updated = try? await client.performance(symbol: "SPY", days: benchmarkDays) {
+            performance = updated
         }
     }
 

@@ -50,6 +50,18 @@ class TechnicalIndicators(BaseModel):
     sample_size: int = 0
 
 
+class InterpretationSection(BaseModel):
+    """One labeled chunk of the plain-language read (e.g. "Momentum").
+
+    Deterministic and *number-free*: it describes what the signals mean, while
+    the precise values live in ``technical_indicators`` (so the UI never shows
+    the same number twice). Authored, never advice.
+    """
+
+    label: str
+    body: str
+
+
 class AnalysisReport(BaseModel):
     """Structured output of the Analyst agent (P3-03).
 
@@ -57,6 +69,12 @@ class AnalysisReport(BaseModel):
     price series. ``narrative`` is the LLM's plain-English interpretation of
     those numbers — it must never introduce values not already present in
     ``technical_indicators``. ``confidence_level`` summarises data quality.
+
+    ``verdict`` and ``interpretation`` (added for the result-screen redesign)
+    are deterministic, number-free reads derived from the same indicators: a
+    one-line takeaway and 2-3 labeled chunks. Both are descriptive only — never
+    directive — so they're safe by construction even though they don't pass
+    through the LLM-focused Risk Critic.
     """
 
     ticker: str
@@ -64,3 +82,7 @@ class AnalysisReport(BaseModel):
     narrative: str
     confidence_level: ConfidenceLevel
     notes: list[str] = Field(default_factory=list)
+    # One-line plain-language takeaway (<= ~15 words, descriptive, no numbers).
+    verdict: str = ""
+    # Labeled meaning-only chunks (Momentum / Trend / Range).
+    interpretation: list[InterpretationSection] = Field(default_factory=list)

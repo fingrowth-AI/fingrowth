@@ -53,8 +53,11 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         # V8-01: apply the entitlements file so the app declares the Sign in with
         # Apple capability. Builds on the simulator without a provisioning
-        # profile; a paid team is needed to sign it for device/TestFlight.
-        CODE_SIGN_ENTITLEMENTS: FinGrowth/FinGrowth.entitlements
+        # profile; a paid team is needed to sign it for device/TestFlight. The
+        # path is indirected through a build variable (default in Signing.xcconfig)
+        # so a free Personal Team can blank it in the gitignored
+        # Signing.local.xcconfig and install on a device without that capability.
+        CODE_SIGN_ENTITLEMENTS: $(FINGROWTH_CODE_SIGN_ENTITLEMENTS)
         # Partial plist merged with the generated keys — adds the ATS local-net
         # exception + local-network usage string so the device can reach the
         # backend over plaintext HTTP on the LAN. See FinGrowth/Info.plist.

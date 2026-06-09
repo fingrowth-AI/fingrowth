@@ -9,4 +9,9 @@
 // Missing Signing.local.xcconfig (e.g. a fresh clone) is fine: the optional
 // include is skipped, so no team is set — simulator builds still work, and a
 // device build just needs the team picked once in Xcode → Signing & Capabilities.
+// Default: apply the Sign in with Apple entitlements file (V8-01). A free
+// Personal Team can't sign that capability, so Signing.local.xcconfig may blank
+// this for on-device testing — the optional include below overrides it.
+FINGROWTH_CODE_SIGN_ENTITLEMENTS = FinGrowth/FinGrowth.entitlements
+
 #include? "Signing.local.xcconfig"

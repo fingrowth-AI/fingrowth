@@ -5,7 +5,7 @@ with three routing paths:
 
     fundamental_analysis : router -> researcher -> analyst -> risk_critic
     technical_analysis   : router -> researcher -> analyst -> risk_critic
-    general_research     : router -> researcher -> risk_critic
+    general_research     : router -> researcher -> general -> risk_critic
 
 The Router classifies the query type; an unknown type falls back to
 ``general_research``.  The Researcher, Analyst and Risk Critic node bodies are
@@ -20,6 +20,7 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.analyst import analyst_node
+from app.agents.general import general_node
 from app.agents.researcher import researcher_node
 from app.agents.risk_critic import risk_critic_node
 
@@ -74,10 +75,11 @@ def router_node(state: AgentState) -> dict[str, Any]:
 
 
 def _route_after_researcher(state: AgentState) -> str:
-    """Fundamental & technical analysis run the Analyst; general skips it."""
+    """Fundamental & technical analysis run the Analyst; general runs the
+    lightweight general-research narrator. Both then hit the Risk Critic."""
     if state.get("route") in _ANALYST_ROUTES:
         return "analyst"
-    return "risk_critic"
+    return "general"
 
 
 def build_graph() -> StateGraph:
@@ -87,6 +89,7 @@ def build_graph() -> StateGraph:
     graph.add_node("router", router_node)
     graph.add_node("researcher", researcher_node)
     graph.add_node("analyst", analyst_node)
+    graph.add_node("general", general_node)
     graph.add_node("risk_critic", risk_critic_node)
 
     graph.add_edge(START, "router")
@@ -94,9 +97,10 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "researcher",
         _route_after_researcher,
-        {"analyst": "analyst", "risk_critic": "risk_critic"},
+        {"analyst": "analyst", "general": "general"},
     )
     graph.add_edge("analyst", "risk_critic")
+    graph.add_edge("general", "risk_critic")
     graph.add_edge("risk_critic", END)
 
     return graph

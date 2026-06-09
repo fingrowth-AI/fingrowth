@@ -25,7 +25,10 @@ enum CSVParserError: LocalizedError, Equatable {
         case .empty:
             return "The CSV file is empty."
         case .unrecognizedFormat(let preview):
-            return "Couldn't recognize this CSV format. Saw columns: \(preview). Supported: Fidelity, Schwab, Robinhood."
+            return "Couldn't recognize this CSV format. Saw columns: \(preview). "
+                + "Expected a positions export with Symbol, Quantity, and a cost column "
+                + "(Fidelity, Schwab, Vanguard, E*TRADE, Robinhood), or a Robinhood "
+                + "transaction history (Activity Date, Instrument, Trans Code, Quantity, Price)."
         case .noValidRows:
             return "No holdings found. Rows are present but none had a recognizable ticker and quantity."
         }
@@ -113,15 +116,15 @@ enum CSVPrivacyParser {
         // not merely the first non-empty row. Rows above it are metadata (which
         // may carry PII like a holder name), so they're scanned too.
         var headerIndex: Int?
-        var detected: (BrokerageFormat, ColumnMap)?
+        var detected: DetectedLayout?
         for (index, row) in rows.enumerated() where !row.allSatisfy(\.isEmpty) {
-            if let match = detectFormat(headers: row.map(normalize)) {
+            if let match = detectLayout(headers: row.map(normalize)) {
                 headerIndex = index
                 detected = match
                 break
             }
         }
-        guard let headerIndex, let (format, columnMap) = detected else {
+        guard let headerIndex, let detected else {
             let preview = (rows.first { !$0.allSatisfy(\.isEmpty) } ?? []).prefix(4).joined(separator: ", ")
             throw CSVParserError.unrecognizedFormat(headerPreview: preview)
         }
@@ -129,7 +132,16 @@ enum CSVPrivacyParser {
         let headerRow = rows[headerIndex]
         let metadataRows = rows[..<headerIndex].filter { !$0.allSatisfy(\.isEmpty) }
         let dataRows = Array(rows[(headerIndex + 1)...])
-        let holdings = dataRows.compactMap { extractHolding(from: $0, columnMap: columnMap) }
+        let format: BrokerageFormat
+        let holdings: [LedgerHolding]
+        switch detected {
+        case .positions(let detectedFormat, let columnMap):
+            format = detectedFormat
+            holdings = dataRows.compactMap { extractHolding(from: $0, columnMap: columnMap) }
+        case .transactions(let detectedFormat, let columnMap):
+            format = detectedFormat
+            holdings = aggregateTransactions(dataRows: dataRows, columnMap: columnMap)
+        }
         guard !holdings.isEmpty else { throw CSVParserError.noValidRows }
 
         let resolvedName = accountName?.nonEmptyTrimmed ?? format.rawValue + " Brokerage"
@@ -225,6 +237,15 @@ enum CSVPrivacyParser {
 
     // MARK: - Format detection
 
+    // Brokerage exports come in two shapes: a positions snapshot (one row per
+    // holding) and a transaction/activity history (one row per trade, from
+    // which net positions are derived). Robinhood ships both, depending on the
+    // report type the user exported.
+    private enum DetectedLayout {
+        case positions(BrokerageFormat, ColumnMap)
+        case transactions(BrokerageFormat, TransactionColumnMap)
+    }
+
     struct ColumnMap {
         let symbolIndex: Int
         let quantityIndex: Int
@@ -273,6 +294,48 @@ enum CSVPrivacyParser {
     private static let robinhoodSymbolHeaders: Set<String> = ["symbol", "instrument", "ticker"]
     private static let robinhoodQuantityHeaders: Set<String> = ["quantity", "shares"]
     private static let robinhoodCostHeaders: Set<String> = ["averagecost", "averagebuyprice"]
+
+    // Robinhood transaction/activity history — discriminated by its
+    // "Activity Date" + "Trans Code" columns, which no positions export has.
+    // Full layout: Activity Date, Process Date, Settle Date, Instrument,
+    // Description, Trans Code, Quantity, Price, Amount.
+    private static let activityDateHeaders: Set<String> = ["activitydate"]
+    private static let activityTransCodeHeaders: Set<String> = ["transcode", "transactioncode"]
+    private static let activityInstrumentHeaders: Set<String> = ["instrument", "symbol", "ticker"]
+    private static let activityQuantityHeaders: Set<String> = ["quantity", "shares"]
+    private static let activityPriceHeaders: Set<String> = ["price"]
+
+    struct TransactionColumnMap {
+        let dateIndex: Int
+        let instrumentIndex: Int
+        let transCodeIndex: Int
+        let quantityIndex: Int
+        let priceIndex: Int
+    }
+
+    private static func detectLayout(headers: [String]) -> DetectedLayout? {
+        // The transaction layout is checked first: it's unambiguous (no
+        // positions export ships Activity Date + Trans Code), while its
+        // Instrument/Quantity columns would otherwise partially overlap the
+        // Robinhood positions candidates.
+        if let date = firstIndex(in: headers, anyOf: activityDateHeaders),
+           let code = firstIndex(in: headers, anyOf: activityTransCodeHeaders),
+           let instrument = firstIndex(in: headers, anyOf: activityInstrumentHeaders),
+           let qty = firstIndex(in: headers, anyOf: activityQuantityHeaders),
+           let price = firstIndex(in: headers, anyOf: activityPriceHeaders) {
+            return .transactions(.robinhood, TransactionColumnMap(
+                dateIndex: date,
+                instrumentIndex: instrument,
+                transCodeIndex: code,
+                quantityIndex: qty,
+                priceIndex: price
+            ))
+        }
+        if let (format, columnMap) = detectFormat(headers: headers) {
+            return .positions(format, columnMap)
+        }
+        return nil
+    }
 
     private static func detectFormat(
         headers: [String]
@@ -408,6 +471,102 @@ enum CSVPrivacyParser {
             purchaseDate: purchaseDate,
             accountType: accountType
         )
+    }
+
+    // MARK: - Transaction-history aggregation
+
+    private struct ParsedTransaction {
+        let date: Date?
+        let symbol: String
+        let isBuy: Bool
+        let quantity: Double
+        let price: Double
+    }
+
+    // Replay a transaction history into net positions under average-cost
+    // accounting (the same convention the backend's per-user reconstruction
+    // uses): buys re-average the basis, sells reduce quantity without touching
+    // it, and a fully-closed position re-bases when it reopens. Non-trade rows
+    // (dividends, transfers, disclaimer footers) are skipped. Runs entirely
+    // on-device like the rest of the parser.
+    private static func aggregateTransactions(
+        dataRows: [[String]],
+        columnMap: TransactionColumnMap
+    ) -> [LedgerHolding] {
+        var transactions: [ParsedTransaction] = []
+        for row in dataRows {
+            guard row.count > max(
+                columnMap.dateIndex, columnMap.instrumentIndex,
+                columnMap.transCodeIndex, columnMap.quantityIndex, columnMap.priceIndex
+            ) else { continue }
+            let symbol = row[columnMap.instrumentIndex]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .uppercased()
+            guard isValidTicker(symbol) else { continue }
+            let code = row[columnMap.transCodeIndex]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            // Only actual trades build positions; CDIV / ACH / SPL etc. don't.
+            guard code == "buy" || code == "sell" else { continue }
+            guard let quantity = parseDecimal(row[columnMap.quantityIndex]), quantity > 0,
+                  let price = parseDecimal(row[columnMap.priceIndex]), price >= 0 else {
+                continue
+            }
+            transactions.append(ParsedTransaction(
+                date: parseDate(row[columnMap.dateIndex]),
+                symbol: symbol,
+                isBuy: code == "buy",
+                quantity: quantity,
+                price: price
+            ))
+        }
+
+        // Robinhood exports newest-first; replay needs oldest-first. Reverse,
+        // then stable-sort by date so intraday order within a day is preserved
+        // even if the export wasn't strictly ordered.
+        var chronological = Array(transactions.reversed())
+        chronological.sort { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
+
+        struct PositionState {
+            var quantity: Double = 0
+            var avgCost: Double = 0
+            var openedAt: Date?
+        }
+        var states: [String: PositionState] = [:]
+        for txn in chronological {
+            var state = states[txn.symbol] ?? PositionState()
+            if txn.isBuy {
+                let total = state.quantity + txn.quantity
+                state.avgCost = total > 0
+                    ? (state.avgCost * state.quantity + txn.price * txn.quantity) / total
+                    : txn.price
+                if state.quantity == 0 { state.openedAt = txn.date }
+                state.quantity = total
+            } else {
+                // Sells reduce the position; basis is unchanged on a partial
+                // close. Oversells (history window missing the opening buy)
+                // clamp to flat rather than going short.
+                state.quantity = max(0, state.quantity - txn.quantity)
+                if state.quantity == 0 {
+                    state.avgCost = 0
+                    state.openedAt = nil
+                }
+            }
+            states[txn.symbol] = state
+        }
+
+        return states
+            .filter { $0.value.quantity > 1e-9 }
+            .sorted { $0.key < $1.key }
+            .map { symbol, state in
+                LedgerHolding(
+                    ticker: symbol,
+                    quantity: state.quantity,
+                    costBasis: state.avgCost,
+                    purchaseDate: state.openedAt,
+                    accountType: nil
+                )
+            }
     }
 
     private static func isValidTicker(_ symbol: String) -> Bool {

@@ -259,6 +259,125 @@ def _signal_relationship(rsi_lean: str, macd_lean: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Result-screen redesign: deterministic, number-free verdict + chunked read.
+# These interpret the same computed indicators the card shows; they never quote
+# a computed value (the card carries the numbers) and are descriptive only.
+# ---------------------------------------------------------------------------
+
+
+def _rsi_state(rsi: float | None) -> str | None:
+    """overbought / oversold / neutral — the *state*, no value."""
+    if rsi is None:
+        return None
+    if rsi >= _RSI_OVERBOUGHT:
+        return "overbought"
+    if rsi <= _RSI_OVERSOLD:
+        return "oversold"
+    return "neutral"
+
+
+def _macd_state(macd: MACDIndicator | None) -> str | None:
+    """positive / negative / flat — momentum direction, no value."""
+    if macd is None:
+        return None
+    if macd.histogram > 0:
+        return "positive"
+    if macd.histogram < 0:
+        return "negative"
+    return "flat"
+
+
+def build_verdict(ticker: str, indicators: TechnicalIndicators) -> str:
+    """A one-line, number-free, descriptive takeaway (<= ~15 words).
+
+    Descriptive only — it characterizes the current read ("looks stretched"),
+    never a directive ("buy"/"sell"/"should"). Deterministic from the indicators.
+    """
+    subject = ticker.upper() if ticker else "This"
+    rsi = _rsi_state(indicators.rsi)
+    macd = _macd_state(indicators.macd)
+    if rsi is None:
+        return f"{subject}: not enough recent data for a confident read."
+
+    if rsi == "overbought":
+        if macd == "positive":
+            return (
+                f"{subject} looks stretched — momentum is still positive, "
+                "but RSI signals it's run hot."
+            )
+        if macd == "negative":
+            return f"{subject} looks stretched — RSI is overbought and momentum has turned down."
+        return f"{subject} looks stretched — RSI is overbought after a strong run."
+    if rsi == "oversold":
+        if macd == "negative":
+            return f"{subject} looks washed out — RSI is oversold with momentum still negative."
+        if macd == "positive":
+            return f"{subject} may be stabilizing — oversold RSI with momentum ticking up."
+        return f"{subject} looks washed out — RSI is oversold after heavy selling."
+    # neutral RSI
+    if macd == "positive":
+        return f"{subject} looks steady, with positive momentum and a neutral RSI."
+    if macd == "negative":
+        return f"{subject} looks soft — a neutral RSI and negative momentum."
+    return f"{subject} looks rangebound — a neutral RSI and little momentum either way."
+
+
+def build_interpretation(indicators: TechnicalIndicators) -> list:
+    """Number-free Momentum / Trend / Range chunks (only those with data).
+
+    Returns a list of :class:`InterpretationSection`; imported lazily to avoid a
+    models import cycle. Each body is 1-2 sentences of meaning — the precise
+    values stay in the indicator card.
+    """
+    from app.models.analysis import InterpretationSection
+
+    sections: list[InterpretationSection] = []
+
+    rsi = _rsi_state(indicators.rsi)
+    macd = _macd_state(indicators.macd)
+    if rsi is not None:
+        if rsi == "overbought":
+            momentum = "RSI is overbought, a sign buying has run hot."
+        elif rsi == "oversold":
+            momentum = "RSI is oversold, a sign selling has run hot."
+        else:
+            momentum = "RSI sits in neutral territory."
+        if macd == "positive":
+            momentum += " MACD momentum is still positive."
+        elif macd == "negative":
+            momentum += " MACD momentum has turned negative."
+        elif macd == "flat":
+            momentum += " MACD momentum is flat."
+        # Call out the classic conflict (overbought but momentum still up, etc.).
+        conflict = (rsi == "overbought" and macd == "positive") or (
+            rsi == "oversold" and macd == "negative"
+        )
+        if conflict:
+            momentum += " The two pull in different directions, so read them together."
+        sections.append(InterpretationSection(label="Momentum", body=momentum))
+
+    if indicators.sma_20 is not None and indicators.latest_close is not None:
+        if indicators.latest_close > indicators.sma_20:
+            trend = "Price is trading above its 20-day average — a mild uptrend."
+        elif indicators.latest_close < indicators.sma_20:
+            trend = "Price is trading below its 20-day average — a mild downtrend."
+        else:
+            trend = "Price is sitting right on its 20-day average — a flat trend."
+        sections.append(InterpretationSection(label="Trend", body=trend))
+
+    if indicators.bollinger is not None and indicators.latest_close is not None:
+        if indicators.latest_close > indicators.bollinger.upper:
+            rng = "Price is above its upper Bollinger band — an unusually stretched reading."
+        elif indicators.latest_close < indicators.bollinger.lower:
+            rng = "Price is below its lower Bollinger band — an unusually stretched reading."
+        else:
+            rng = "Price is within its Bollinger bands — a normal trading range."
+        sections.append(InterpretationSection(label="Range", body=rng))
+
+    return sections
+
+
 def _fallback_narrative(
     ticker: str,
     indicators: TechnicalIndicators,
@@ -558,6 +677,8 @@ def analyze(
         narrative=narrative,
         confidence_level=confidence,
         notes=notes,
+        verdict=build_verdict(packet.ticker, indicators),
+        interpretation=build_interpretation(indicators),
     )
 
 

@@ -86,6 +86,73 @@ final class CSVPrivacyParserTests: XCTestCase {
         XCTAssertEqual(byTicker["AMD"]?.quantity, 12)
     }
 
+    // MARK: - Robinhood transaction/activity history
+
+    func testRobinhoodActivityCSVAggregatesNetPositions() throws {
+        // Robinhood's transaction-history export (newest-first): holdings are
+        // derived by replaying buys/sells per Instrument into net positions.
+        let csv = """
+        "Activity Date","Process Date","Settle Date","Instrument","Description","Trans Code","Quantity","Price","Amount"
+        "3/14/2025","3/14/2025","3/15/2025","TSLA","Tesla","Sell","2","$250.00","$500.00"
+        "3/01/2025","3/01/2025","3/02/2025","AAPL","Apple","Buy","4","$200.00","($800.00)"
+        "2/12/2025","2/12/2025","2/13/2025","TSLA","Tesla","Buy","3","$220.00","($660.00)"
+        "2/03/2025","2/03/2025","2/04/2025","TSLA","Tesla","Buy","3","$200.00","($600.00)"
+        "1/15/2025","1/15/2025","1/16/2025","AAPL","Apple","CDIV","","","$3.20"
+        "1/10/2025","1/10/2025","1/11/2025","","ACH Deposit","ACH","","","$5,000.00"
+        """
+        let result = try CSVPrivacyParser.parse(csv: csv)
+
+        XCTAssertEqual(result.format, .robinhood)
+        let byTicker = Dictionary(uniqueKeysWithValues: result.ledger.holdings.map { ($0.ticker, $0) })
+
+        // TSLA: bought 3 @ 200 + 3 @ 220 (avg 210), sold 2 → net 4 @ 210.
+        XCTAssertEqual(byTicker["TSLA"]?.quantity, 4)
+        XCTAssertEqual(try XCTUnwrap(byTicker["TSLA"]?.costBasis), 210.0, accuracy: 0.001)
+        // AAPL: single buy; the dividend row must not distort it.
+        XCTAssertEqual(byTicker["AAPL"]?.quantity, 4)
+        XCTAssertEqual(byTicker["AAPL"]?.costBasis, 200.0)
+        // The first buy's date is kept as the position's acquisition date.
+        XCTAssertNotNil(byTicker["TSLA"]?.purchaseDate)
+    }
+
+    func testRobinhoodActivityFullyClosedPositionsAreDropped() throws {
+        let csv = """
+        Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount
+        3/10/2025,3/10/2025,3/11/2025,NVDA,NVIDIA,Sell,5,$900.00,$4500.00
+        2/01/2025,2/01/2025,2/02/2025,NVDA,NVIDIA,Buy,5,$700.00,($3500.00)
+        2/01/2025,2/01/2025,2/02/2025,AMD,Advanced Micro,Buy,10,$100.00,($1000.00)
+        """
+        let result = try CSVPrivacyParser.parse(csv: csv)
+        XCTAssertEqual(result.ledger.holdings.map(\.ticker), ["AMD"])
+        XCTAssertEqual(result.ledger.holdings.first?.quantity, 10)
+    }
+
+    func testRobinhoodActivityWithOnlyNonTradeRowsThrowsNoValidRows() {
+        let csv = """
+        Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount
+        1/10/2025,1/10/2025,1/11/2025,,ACH Deposit,ACH,,,$5000.00
+        """
+        XCTAssertThrowsError(try CSVPrivacyParser.parse(csv: csv)) { error in
+            XCTAssertEqual(error as? CSVParserError, .noValidRows)
+        }
+    }
+
+    func testUnrecognizedFormatErrorNamesExpectedAndSeenColumns() {
+        let csv = """
+        Run Date,Action,Exchange
+        1/1/2025,Dividend,NASDAQ
+        """
+        XCTAssertThrowsError(try CSVPrivacyParser.parse(csv: csv)) { error in
+            guard case .unrecognizedFormat(let preview)? = error as? CSVParserError else {
+                return XCTFail("Expected .unrecognizedFormat, got \(error)")
+            }
+            XCTAssertTrue(preview.contains("Run Date"), "names what was seen")
+            let message = (error as? CSVParserError)?.errorDescription ?? ""
+            XCTAssertTrue(message.contains("Symbol"), "names the expected positions columns")
+            XCTAssertTrue(message.contains("Activity Date"), "names the expected transaction columns")
+        }
+    }
+
     // MARK: - Richer ledger fields (design §8.1 Holding)
 
     func testFidelityCSVCapturesAccountTypeAndPurchaseDate() throws {

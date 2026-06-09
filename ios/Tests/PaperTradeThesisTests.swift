@@ -140,10 +140,7 @@ private final class StubPaperTradingService: PaperTradingService, @unchecked Sen
         placeOrderCallCount += 1
         return order
     }
-    func benchmark(symbol: String, days: Int) async throws -> BenchmarkSeries {
-        BenchmarkSeries(symbol: symbol, points: [])
-    }
-    func portfolioHistory(period: String, timeframe: String) async throws -> PortfolioHistorySeries {
-        PortfolioHistorySeries(baseValue: 0, points: [])
+    func performance(symbol: String, days: Int) async throws -> PerformanceComparison {
+        PerformanceComparison(benchmarkSymbol: symbol, baseEquity: 0, points: [])
     }
 }

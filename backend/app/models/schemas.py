@@ -78,11 +78,22 @@ class ResearchData(BaseModel):
     freshness: DataFreshness = Field(default_factory=DataFreshness)
 
 
+class InterpretationSection(BaseModel):
+    """A labeled, number-free chunk of the plain-language read (e.g. "Momentum")."""
+
+    label: str
+    body: str
+
+
 class AnalysisData(BaseModel):
     technical: dict[str, Any] = Field(default_factory=dict)
     narrative: str = ""
     # "high" | "medium" | "low" | "insufficient_data"
     confidence: str = "insufficient_data"
+    # Result-screen redesign: a one-line takeaway and number-free chunks derived
+    # deterministically from the indicators (the card carries the values).
+    verdict: str = ""
+    interpretation: list[InterpretationSection] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

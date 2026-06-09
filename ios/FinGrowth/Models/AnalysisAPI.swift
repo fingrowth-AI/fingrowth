@@ -78,10 +78,47 @@ extension DataFreshness {
     }
 }
 
+// One labeled, number-free chunk of the plain-language read ("Momentum", …).
+// Produced deterministically by the backend Analyst; the indicator card carries
+// the precise values so these never repeat them.
+struct InterpretationSection: Codable, Sendable, Equatable, Hashable {
+    var label: String
+    var body: String
+}
+
 struct AnalysisData: Codable, Sendable, Equatable {
     var technical: [String: JSONValue] = [:]
     var narrative: String = ""
     var confidence: String = "insufficient_data"
+    // Result-screen redesign: a one-line takeaway and the chunked read.
+    var verdict: String = ""
+    var interpretation: [InterpretationSection] = []
+
+    init(
+        technical: [String: JSONValue] = [:],
+        narrative: String = "",
+        confidence: String = "insufficient_data",
+        verdict: String = "",
+        interpretation: [InterpretationSection] = []
+    ) {
+        self.technical = technical
+        self.narrative = narrative
+        self.confidence = confidence
+        self.verdict = verdict
+        self.interpretation = interpretation
+    }
+
+    // Custom decode so every field is optional-with-default: the general route
+    // and any partial/older payload that omits verdict/interpretation (or even
+    // narrative) decode cleanly instead of throwing on a missing key.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        technical = try c.decodeIfPresent([String: JSONValue].self, forKey: .technical) ?? [:]
+        narrative = try c.decodeIfPresent(String.self, forKey: .narrative) ?? ""
+        confidence = try c.decodeIfPresent(String.self, forKey: .confidence) ?? "insufficient_data"
+        verdict = try c.decodeIfPresent(String.self, forKey: .verdict) ?? ""
+        interpretation = try c.decodeIfPresent([InterpretationSection].self, forKey: .interpretation) ?? []
+    }
 }
 
 struct RiskFlag: Codable, Sendable, Equatable, Hashable {

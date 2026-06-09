@@ -276,6 +276,9 @@ def _build_response(
         technical=indicators,
         narrative=narrative_text,
         confidence=analysis_dict.get("confidence_level", "insufficient_data"),
+        # Deterministic, number-free reads for the redesigned result screen.
+        verdict=analysis_dict.get("verdict", ""),
+        interpretation=analysis_dict.get("interpretation", []),
     )
 
     return AnalysisResponse(

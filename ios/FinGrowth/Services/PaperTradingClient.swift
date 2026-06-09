@@ -34,8 +34,7 @@ protocol PaperTradingService: Sendable {
     func listPositions() async throws -> [BrokerPosition]
     func listOrders(limit: Int, status: String) async throws -> [BrokerOrder]
     func placeOrder(_ request: PlacePaperOrderRequest) async throws -> BrokerOrder
-    func benchmark(symbol: String, days: Int) async throws -> BenchmarkSeries
-    func portfolioHistory(period: String, timeframe: String) async throws -> PortfolioHistorySeries
+    func performance(symbol: String, days: Int) async throws -> PerformanceComparison
 }
 
 struct PlacePaperOrderRequest: Encodable, Sendable, Equatable {
@@ -109,23 +108,14 @@ final class PaperTradingClient: PaperTradingService {
         try await post("/api/v1/paper/order", body: request)
     }
 
-    func benchmark(symbol: String = "SPY", days: Int = 30) async throws -> BenchmarkSeries {
-        var components = URLComponents(string: "/api/v1/paper/benchmark")!
+    // V8-04: the user's equity curve overlaid on a benchmark over the same
+    // window — replaces the separate benchmark + portfolio-history fetches the
+    // Performance tracker used to stitch together client-side.
+    func performance(symbol: String = "SPY", days: Int = 30) async throws -> PerformanceComparison {
+        var components = URLComponents(string: "/api/v1/paper/performance")!
         components.queryItems = [
             URLQueryItem(name: "symbol", value: symbol),
             URLQueryItem(name: "days", value: String(days)),
-        ]
-        return try await get(components.url!.relativeString)
-    }
-
-    func portfolioHistory(
-        period: String = "1M",
-        timeframe: String = "1D"
-    ) async throws -> PortfolioHistorySeries {
-        var components = URLComponents(string: "/api/v1/paper/portfolio-history")!
-        components.queryItems = [
-            URLQueryItem(name: "period", value: period),
-            URLQueryItem(name: "timeframe", value: timeframe),
         ]
         return try await get(components.url!.relativeString)
     }

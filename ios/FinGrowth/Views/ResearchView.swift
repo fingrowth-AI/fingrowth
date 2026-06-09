@@ -461,9 +461,20 @@ struct ResearchView: View {
     @ViewBuilder
     private func resultSection(controller: AnalysisStreamController) -> some View {
         if let final = controller.finalResult {
+            // Chat-style decomposition of the result text: one takeaway line,
+            // then scannable sections (headlines as bullets, context separated)
+            // instead of a single dense paragraph. Same treatment for all three
+            // analysis types; reorganization only, the words are the backend's.
+            let presentation = AnalysisResultPresenter.presentation(
+                verdict: final.analysis.verdict,
+                narrative: final.analysis.narrative,
+                query: submittedQuery,
+                newsHeadlines: AnalysisResultPresenter.headlines(from: final.research.news)
+            )
             VStack(alignment: .leading, spacing: 12) {
+                // 1. Verdict — the 2-second takeaway, leading the result.
                 Card(title: "Result · \(final.ticker)") {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         HStack(alignment: .firstTextBaseline) {
                             Text(final.analysis.confidence.replacingOccurrences(of: "_", with: " ").capitalized)
                                 .font(.subheadline.weight(.semibold))
@@ -489,41 +500,56 @@ struct ResearchView: View {
                             .controlSize(.small)
                         }
 
-                        // V7-03: data freshness — when the price data is "as of".
+                        // One plain-language takeaway (backend deterministic
+                        // verdict; the narrative's lead sentence for the
+                        // general route). Detail follows in sections below.
+                        Text(presentation.takeaway)
+                            .font(.title3.weight(.semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+
                         if let freshness = final.research.freshness?.priceDisplay {
                             Label(freshness, systemImage: "clock")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-
-                        // V10-02: lead with a short, plain-language conclusion that
-                        // answers the question. Indicators move below as expandable
-                        // evidence — the result never opens on a number dump.
-                        Text(AnalysisResultPresenter.leadAssessment(
-                            narrative: final.analysis.narrative, query: submittedQuery
-                        ))
-                        .font(.body)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 2)
                     }
                 }
 
-                // V11-01: "What this means for you" — references the user's real
-                // position when they hold the analyzed ticker. Additive and
-                // on-device; omitted entirely when the ticker isn't held.
+                // 2. Portfolio-context slot — directly under the verdict. Filled
+                // by the V11-01/V11-02 "What this means for you" section when the
+                // user holds the analyzed ticker; otherwise empty. (This is the
+                // slot the redesign brief reserved for portfolio awareness — it's
+                // already built, so it renders here rather than as a placeholder.)
                 if let positionInsight {
                     positionInsightSection(positionInsight)
                 }
 
-                // V10-05: a small price-vs-Bollinger-bands chart leads the
-                // evidence — a picture of where the close sits, before the
-                // numbers. Renders only when the bands are available.
+                // 3. Signal-at-a-glance — the key interpretive tags as pills.
+                let pills = AnalysisResultPresenter.signalPills(from: final.analysis.technical)
+                if !pills.isEmpty {
+                    signalPillRow(pills)
+                }
+
+                // 4. What this means — chunked interpretation (no repeated numbers).
+                whatThisMeansSection(final.analysis)
+
+                // 4b. The narrative, decomposed into scannable sections
+                // (headlines as bullets, context split out). Inline for the
+                // general route, where it *is* the body; collapsed supporting
+                // detail when the interpretation chunks above carry the meaning.
+                narrativeSections(
+                    presentation.sections,
+                    inline: final.analysis.interpretation.isEmpty
+                )
+
+                // 5. A small price-vs-Bollinger-bands chart (V10-05).
                 if let bands = BollingerChartModel.make(from: final.analysis.technical) {
                     Card(title: "Price vs. Bollinger Bands") {
                         BollingerBandChart(point: bands)
                     }
                 }
 
+                // 6. Technical Indicators — drill-down detail, collapsed.
                 expandableSection(
                     title: "Technical Indicators",
                     systemImage: "chart.xyaxis.line",
@@ -532,10 +558,12 @@ struct ResearchView: View {
                     TechnicalIndicatorsView(indicators: final.analysis.technical)
                 }
 
+                // 7. Risk review — collapsed; the approve/flag state reads in the
+                // (compact) header rather than as a full section.
                 expandableSection(
-                    title: "Risk Assessment",
+                    title: final.riskReview.approved ? "Risk · Approved" : "Risk · Flagged",
                     systemImage: "shield.lefthalf.filled",
-                    initiallyExpanded: !final.riskReview.flags.isEmpty
+                    initiallyExpanded: false
                 ) {
                     RiskReviewView(review: final.riskReview)
                 }
@@ -544,9 +572,7 @@ struct ResearchView: View {
                     personalizedContextSection(enrichedContext)
                 }
 
-                // V12-03: the reverse link on the *live* result — any trade
-                // placed from this analysis shows here immediately (the @Query
-                // updates), so the bidirectional link doesn't wait on history.
+                // V12-03: trades placed from this analysis appear immediately.
                 let linkedTrades = linkedTradesForCurrentResult
                 if !linkedTrades.isEmpty {
                     Card(title: "Paper trades from this analysis") {
@@ -556,6 +582,7 @@ struct ResearchView: View {
                     }
                 }
 
+                // 8. Disclaimer — always at the bottom.
                 Text(final.disclaimer)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -612,6 +639,93 @@ struct ResearchView: View {
             .background(FinTheme.mint.opacity(0.12))
             .foregroundStyle(FinTheme.mint)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    // Signal-at-a-glance pills: RSI / MACD / band state as a tight colored row.
+    private func signalPillRow(_ pills: [SignalPill]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(pills) { pill in
+                HStack(spacing: 4) {
+                    Text(pill.indicator)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(pill.state)
+                        .font(.caption2.weight(.semibold))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(signalTint(pill.tone).opacity(0.15))
+                .foregroundStyle(signalTint(pill.tone))
+                .clipShape(Capsule())
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func signalTint(_ tone: SignalTone) -> Color {
+        switch tone {
+        case .caution: return FinTheme.amber
+        case .positive: return FinTheme.accent
+        case .neutral: return .secondary
+        }
+    }
+
+    // The decomposed narrative sections. Inline: each section is its own card
+    // (the general route's main body). Collapsed: tucked into one expandable
+    // "Full read" card so technical/fundamental results don't repeat the
+    // interpretation chunks above the fold.
+    @ViewBuilder
+    private func narrativeSections(_ sections: [NarrativeSection], inline: Bool) -> some View {
+        if !sections.isEmpty {
+            if inline {
+                ForEach(sections) { section in
+                    Card(title: section.header) {
+                        NarrativeSectionBody(section: section)
+                    }
+                }
+            } else {
+                expandableSection(
+                    title: "Full read",
+                    systemImage: "text.alignleft",
+                    initiallyExpanded: false
+                ) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(sections) { section in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(section.header.uppercased())
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                NarrativeSectionBody(section: section)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // "What this means" — short, labeled, number-free chunks (Momentum / Trend /
+    // Range). Rendered only when the backend produced chunks (technical /
+    // fundamental); for the general route the verdict line carries the summary,
+    // so this stays empty rather than duplicating it.
+    @ViewBuilder
+    private func whatThisMeansSection(_ analysis: AnalysisData) -> some View {
+        if !analysis.interpretation.isEmpty {
+            Card(title: "What this means") {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(analysis.interpretation, id: \.label) { section in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(section.label)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(section.body)
+                                .font(.subheadline)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // V11-01: "What this means for you" — the user's real position in the
@@ -1084,6 +1198,35 @@ private struct TechnicalIndicatorsView: View {
     }
 }
 
+// One decomposed narrative section: bullets for discrete items (headlines,
+// individual signal reads), short prose for context. Shared by the live result
+// card and the persisted history detail.
+private struct NarrativeSectionBody: View {
+    let section: NarrativeSection
+
+    var body: some View {
+        if section.bullets.isEmpty {
+            Text(section.prose)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(section.bullets.enumerated()), id: \.offset) { _, item in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("•")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(FinTheme.accent)
+                        Text(item)
+                            .font(.subheadline)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct RiskReviewView: View {
     let review: RiskReview
 
@@ -1143,8 +1286,22 @@ private struct HistoryDetailSheet: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     if !entry.narrative.isEmpty {
-                        Text(entry.narrative)
-                            .font(.body)
+                        // Same chat-style decomposition as the live result:
+                        // takeaway line, then sections — no paragraph wall.
+                        // History entries keep only the prose, so headlines are
+                        // recovered from the narrative's own marker sentence.
+                        let presentation = AnalysisResultPresenter.presentation(
+                            verdict: "", narrative: entry.narrative, query: entry.query
+                        )
+                        Text(presentation.takeaway)
+                            .font(.body.weight(.semibold))
+                        ForEach(presentation.sections) { section in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(section.header)
+                                    .font(.headline)
+                                NarrativeSectionBody(section: section)
+                            }
+                        }
                     }
                     if !entry.indicators.isEmpty {
                         Divider()

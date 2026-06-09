@@ -99,10 +99,10 @@ def test_technical_path():
 
 
 def test_general_path_skips_analyst():
-    """General: router -> researcher -> risk_critic (no analyst)."""
+    """General: router -> researcher -> general -> risk_critic (no analyst)."""
     result = _run("general")
     assert result["route"] == "general_research"
-    assert result["path"] == ["router", "researcher", "risk_critic"]
+    assert result["path"] == ["router", "researcher", "general", "risk_critic"]
     assert "analyst" not in result["path"]
 
 
@@ -114,13 +114,13 @@ def test_general_path_skips_analyst():
 def test_unknown_type_defaults_to_general_research():
     result = _run("astrology")
     assert result["route"] == "general_research"
-    assert result["path"] == ["router", "researcher", "risk_critic"]
+    assert result["path"] == ["router", "researcher", "general", "risk_critic"]
 
 
 def test_missing_type_defaults_to_general_research():
     result = _run(None)
     assert result["route"] == "general_research"
-    assert result["path"] == ["router", "researcher", "risk_critic"]
+    assert result["path"] == ["router", "researcher", "general", "risk_critic"]
 
 
 # ---------------------------------------------------------------------------

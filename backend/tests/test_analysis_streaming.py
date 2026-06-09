@@ -300,6 +300,21 @@ async def test_session_id_is_generated_when_omitted(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_technical_route_emits_verdict_and_interpretation(client: AsyncClient):
+    """Result-screen redesign: the final analysis carries a one-line verdict and
+    number-free interpretation chunks alongside the indicators."""
+    _s, _ct, events = await _collect_events(
+        client, {"query": "q", "ticker": "AAPL", "analysis_type": "technical"}
+    )
+    analysis = next(e for e in events if e["event"] == "final_result")["data"]["analysis"]
+    assert analysis["verdict"].strip(), "expected a one-line verdict"
+    assert len(analysis["verdict"].split()) <= 15
+    labels = [s["label"] for s in analysis["interpretation"]]
+    assert "Momentum" in labels  # at minimum, RSI-driven momentum chunk
+    assert all(s["body"].strip() for s in analysis["interpretation"])
+
+
+@pytest.mark.asyncio
 async def test_portfolio_profile_influences_narrative(client: AsyncClient):
     """With LLM disabled, the deterministic fallback appends the profile sentence
     so the influence is observable end-to-end without depending on a live model."""
@@ -435,6 +450,21 @@ async def test_partial_result_emitted_for_research_and_analysis_stages(
     partials = [e for e in events if e["event"] == "partial_result"]
     stages = [p["data"]["stage"] for p in partials]
     assert stages == ["research", "analysis"]
+
+
+@pytest.mark.asyncio
+async def test_general_route_produces_research_summary_narrative(
+    client: AsyncClient,
+):
+    """The general route now narrates a research summary instead of nothing —
+    so the iOS client never falls back to 'We couldn't produce an assessment'."""
+    _s, _ct, events = await _collect_events(
+        client, {"query": "what's happening?", "ticker": "AAPL", "analysis_type": "general"}
+    )
+    final = next(e for e in events if e["event"] == "final_result")
+    narrative = final["data"]["analysis"]["narrative"]
+    assert narrative.strip(), "general route must produce a narrative"
+    assert "research summary" in narrative.lower()
 
 
 @pytest.mark.asyncio
