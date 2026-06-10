@@ -21,7 +21,7 @@ enum RootTab: String, CaseIterable, Identifiable {
         switch self {
         case .research: "magnifyingglass"
         case .portfolio: "chart.line.uptrend.xyaxis"
-        case .privacy: "lock.shield"
+        case .privacy: "lock.fill"
         case .settings: "gearshape"
         }
     }

@@ -46,6 +46,13 @@ enum TickerCatalog {
         Entry(symbol: "QCOM", name: "Qualcomm Inc."),
     ]
 
+    // Company name for a known symbol (result-screen header); nil when the
+    // symbol isn't in the seeded catalog.
+    static func name(for symbol: String) -> String? {
+        let upper = symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return popular.first { $0.symbol == upper }?.name
+    }
+
     static func suggestions(
         for prefix: String,
         recents: [String] = [],

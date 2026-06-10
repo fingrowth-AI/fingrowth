@@ -12,6 +12,9 @@ struct FinGrowthApp: App {
     private let paperTradingClient: PaperTradingClient
 
     init() {
+        // UIKit-level theme chrome (tab bar, segmented controls) — the FG
+        // design tokens SwiftUI modifiers can't reach.
+        FinTheme.applyChrome()
         let settings = AppSettings()
         _settings = State(initialValue: settings)
         do {

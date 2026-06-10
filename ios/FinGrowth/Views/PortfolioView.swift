@@ -15,6 +15,8 @@ struct PortfolioView: View {
     let store: PortfolioStore
     let paperTradePrefill: PaperTradePrefill
     let gemma: GemmaService
+    // Performance empty-state CTA: jump back to the Research tab.
+    var onSwitchToResearch: () -> Void = {}
 
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \PrivateLedger.importedAt, order: .reverse)
@@ -77,7 +79,8 @@ struct PortfolioView: View {
                         case .performance:
                             PerformanceSection(
                                 store: store,
-                                paperTrades: paperTrades
+                                paperTrades: paperTrades,
+                                onSwitchToResearch: onSwitchToResearch
                             )
                         }
                     }
@@ -580,85 +583,108 @@ private struct BrokerOrderRow: View {
 private struct PerformanceSection: View {
     let store: PortfolioStore
     let paperTrades: [PaperTradeRecord]
+    var onSwitchToResearch: () -> Void = {}
 
     @State private var selectedDate: Date?
-    @State private var focus: PerformanceFocus = .portfolio
+    @State private var range: PerfRange = .m1
 
-    private enum PerformanceFocus: String, CaseIterable, Identifiable {
-        case portfolio = "Portfolio"
-        case benchmark = "SPY"
-        case spread = "Spread"
+    // Window selector under the chart (screens-after-perf). Each case maps to
+    // the day count handed to the backend performance endpoint.
+    private enum PerfRange: String, CaseIterable, Identifiable {
+        case w1 = "1W"
+        case m1 = "1M"
+        case m3 = "3M"
+        case ytd = "YTD"
+        case all = "All"
 
         var id: String { rawValue }
-    }
 
-    var body: some View {
-        List {
-            Section {
-                if let chart = chartData {
-                    VStack(alignment: .leading, spacing: 16) {
-                        performanceHeader(chart)
-
-                        Picker("Focus", selection: $focus) {
-                            ForEach(PerformanceFocus.allCases) { item in
-                                Text(item.rawValue).tag(item)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-
-                        performanceChart(chart)
-                            .frame(height: 260)
-
-                        chartLegend
-                    }
-                    .padding(.vertical, 4)
-                } else {
-                    Text(emptyChartMessage)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("Cumulative return")
-            }
-
-            if !allocationData.isEmpty {
-                Section {
-                    allocationChart
-                        .frame(height: allocationChartHeight)
-                    allocationRows
-                } header: {
-                    Text("Open position mix")
-                }
-            }
-
-            if !positionPLData.isEmpty {
-                Section {
-                    positionPLChart
-                        .frame(height: positionPLChartHeight)
-                } header: {
-                    Text("Unrealized P/L")
-                }
-            }
-
-            Section("Stats") {
-                statRow(label: "Paper trades placed", value: "\(paperTrades.count)")
-                statRow(
-                    label: "Open positions",
-                    value: "\(store.positions.count)"
-                )
-                if let totalValue = totalMarketValue {
-                    statRow(label: "Total market value", value: formatPrice(totalValue))
-                }
-                if let totalPL = totalUnrealized {
-                    statRow(
-                        label: "Unrealized P/L",
-                        value: plLabel(totalPL),
-                        valueColor: totalPL >= 0 ? .green : .red
-                    )
-                }
+        var days: Int {
+            switch self {
+            case .w1: return 7
+            case .m1: return 30
+            case .m3: return 90
+            case .ytd:
+                let calendar = Calendar.current
+                guard let start = calendar.date(
+                    from: calendar.dateComponents([.year], from: .now)
+                ) else { return 30 }
+                let elapsed = calendar.dateComponents([.day], from: start, to: .now).day ?? 30
+                return max(7, elapsed)
+            case .all: return 365
             }
         }
-        .listStyle(.insetGrouped)
+    }
+
+    // SPY line color from the comp (#6E7A73) — between the t2/t3 text tiers.
+    private static let benchmarkTint = Color(
+        red: 0x6E / 255.0, green: 0x7A / 255.0, blue: 0x73 / 255.0
+    )
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                if let chart = chartData {
+                    performanceHero(chart)
+                        .padding(.horizontal, 4)
+                    chartCard(chart)
+                    supportTiles(chart)
+                } else {
+                    emptyHero
+                        .padding(.horizontal, 4)
+                    emptyStateCard
+                    emptyStateCTA
+                }
+
+                if !allocationData.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionLabel("Open position mix")
+                            .padding(.horizontal, 4)
+                        GlassPanel {
+                            VStack(spacing: 12) {
+                                allocationChart
+                                    .frame(height: allocationChartHeight)
+                                allocationRows
+                            }
+                        }
+                    }
+                }
+
+                if !positionPLData.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionLabel("Unrealized P/L")
+                            .padding(.horizontal, 4)
+                        GlassPanel {
+                            positionPLChart
+                                .frame(height: positionPLChartHeight)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    SectionLabel("Stats")
+                        .padding(.horizontal, 4)
+                    GlassPanel {
+                        VStack(spacing: 10) {
+                            statRow(label: "Paper trades placed", value: "\(paperTrades.count)")
+                            statRow(label: "Open positions", value: "\(store.positions.count)")
+                            if let totalValue = totalMarketValue {
+                                statRow(label: "Total market value", value: formatPrice(totalValue))
+                            }
+                            if let totalPL = totalUnrealized {
+                                statRow(
+                                    label: "Unrealized P/L",
+                                    value: plLabel(totalPL),
+                                    valueColor: totalPL >= 0 ? FinTheme.accent : FinTheme.danger
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 24)
+        }
         .scrollContentBackground(.hidden)
         // The curve is best-effort on the shared refresh; if it was missing
         // (e.g. a rate-limited benchmark), retry when the user actually opens
@@ -705,32 +731,69 @@ private struct PerformanceSection: View {
         var id: String { symbol }
     }
 
+    // Hero block: the cumulative paper return as the screen's one big number,
+    // with the SPY comparison and the beating/trailing spread underneath.
+    // Scrubbing the chart re-points the whole block at the selected day.
     @ViewBuilder
-    private func performanceHeader(_ series: PerformanceSeries) -> some View {
+    private func performanceHero(_ series: PerformanceSeries) -> some View {
         let snapshot = selectedSnapshot(in: series)
-        VStack(alignment: .leading, spacing: 12) {
-            if let snapshot {
-                Text(snapshot.date.formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+        let portfolioReturn = snapshot?.portfolioReturn ?? latestPortfolioReturn(in: series)
+        let benchmarkReturn = snapshot?.benchmarkReturn ?? latestBenchmarkReturn(in: series)
+        let spread = snapshot?.spread ?? latestSpread(in: series)
+        VStack(alignment: .leading, spacing: 4) {
+            SectionLabel("Cumulative return · paper")
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(percentLabel(portfolioReturn))
+                    .font(.system(size: 40, weight: .heavy))
+                    .tracking(-1)
+                    .monospacedDigit()
+                    .foregroundStyle(returnColor(portfolioReturn))
+                Text(heroDateLabel(series, snapshot: snapshot))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(FinTheme.textSecondary)
             }
+            HStack(spacing: 14) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Self.benchmarkTint)
+                        .frame(width: 8, height: 8)
+                    Text("SPY \(percentLabel(benchmarkReturn))")
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(FinTheme.textSecondary)
+                if let spread {
+                    Text(spreadLabel(spread))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(spread >= 0 ? FinTheme.accent : FinTheme.danger)
+                }
+            }
+        }
+    }
 
-            HStack(spacing: 10) {
-                metricTile(
-                    "Portfolio",
-                    value: percentLabel(snapshot?.portfolioReturn ?? latestPortfolioReturn(in: series)),
-                    color: returnColor(snapshot?.portfolioReturn ?? latestPortfolioReturn(in: series))
-                )
-                metricTile(
-                    "SPY",
-                    value: percentLabel(snapshot?.benchmarkReturn ?? latestBenchmarkReturn(in: series)),
-                    color: returnColor(snapshot?.benchmarkReturn ?? latestBenchmarkReturn(in: series))
-                )
-                metricTile(
-                    "Spread",
-                    value: percentLabel(snapshot?.spread ?? latestSpread(in: series)),
-                    color: returnColor(snapshot?.spread ?? latestSpread(in: series))
-                )
+    // "since Jun 2" against the window start, or the scrubbed day's date.
+    private func heroDateLabel(_ series: PerformanceSeries, snapshot: Snapshot?) -> String {
+        if selectedDate != nil, let snapshot {
+            return snapshot.date.formatted(.dateTime.month(.abbreviated).day())
+        }
+        guard let first = series.portfolio.first?.date else { return "" }
+        return "since " + first.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    private func spreadLabel(_ spread: Double) -> String {
+        let points = String(format: "%.2f", abs(spread))
+        return spread >= 0 ? "▲ Beating by \(points) pts" : "▼ Trailing by \(points) pts"
+    }
+
+    private func chartCard(_ series: PerformanceSeries) -> some View {
+        GlassPanel {
+            VStack(spacing: 10) {
+                performanceChart(series)
+                    .frame(height: 220)
+                Rectangle()
+                    .fill(FinTheme.line)
+                    .frame(height: 1)
+                    .padding(.horizontal, -16)
+                rangeChips
             }
         }
     }
@@ -738,56 +801,46 @@ private struct PerformanceSection: View {
     @ViewBuilder
     private func performanceChart(_ series: PerformanceSeries) -> some View {
         Chart {
-            if focus != .benchmark {
-                ForEach(series.portfolio, id: \.self) { point in
-                    AreaMark(
-                        x: .value("Date", point.date),
-                        yStart: .value("Baseline", 0),
-                        yEnd: .value("Return", point.returnPct)
+            ForEach(series.portfolio, id: \.self) { point in
+                AreaMark(
+                    x: .value("Date", point.date),
+                    yStart: .value("Baseline", 0),
+                    yEnd: .value("Return", point.returnPct)
+                )
+                // The comp's fill: green fading to transparent under the curve.
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [FinTheme.accent.opacity(0.22), FinTheme.accent.opacity(0)],
+                        startPoint: .top,
+                        endPoint: .bottom
                     )
-                    .foregroundStyle(FinTheme.accent.opacity(focus == .portfolio ? 0.18 : 0.08))
-                    .interpolationMethod(.catmullRom)
+                )
+                .interpolationMethod(.catmullRom)
 
-                    LineMark(
-                        x: .value("Date", point.date),
-                        y: .value("Return", point.returnPct),
-                        series: .value("Series", "Portfolio")
-                    )
-                    .foregroundStyle(FinTheme.accent)
-                    .lineStyle(StrokeStyle(lineWidth: focus == .portfolio ? 3 : 2))
-                    .interpolationMethod(.catmullRom)
-                }
+                LineMark(
+                    x: .value("Date", point.date),
+                    y: .value("Return", point.returnPct),
+                    series: .value("Series", "Portfolio")
+                )
+                .foregroundStyle(FinTheme.accent)
+                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .interpolationMethod(.catmullRom)
             }
 
-            if focus != .portfolio {
-                ForEach(series.benchmark, id: \.self) { point in
-                    LineMark(
-                        x: .value("Date", point.date),
-                        y: .value("Return", point.returnPct),
-                        series: .value("Series", "SPY")
-                    )
-                    .foregroundStyle(.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: focus == .benchmark ? 3 : 2, dash: [5, 4]))
-                    .interpolationMethod(.catmullRom)
-                }
-            }
-
-            if focus == .spread {
-                ForEach(spreadPoints(in: series), id: \.self) { point in
-                    LineMark(
-                        x: .value("Date", point.date),
-                        y: .value("Spread", point.returnPct),
-                        series: .value("Series", "Spread")
-                    )
-                    .foregroundStyle(FinTheme.amber)
-                    .lineStyle(StrokeStyle(lineWidth: 3))
-                    .interpolationMethod(.catmullRom)
-                }
+            ForEach(series.benchmark, id: \.self) { point in
+                LineMark(
+                    x: .value("Date", point.date),
+                    y: .value("Return", point.returnPct),
+                    series: .value("Series", "SPY")
+                )
+                .foregroundStyle(Self.benchmarkTint)
+                .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
+                .interpolationMethod(.catmullRom)
             }
 
             RuleMark(y: .value("Break even", 0))
                 .foregroundStyle(.secondary.opacity(0.35))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 5]))
 
             if let snapshot = selectedSnapshot(in: series) {
                 RuleMark(x: .value("Selected date", snapshot.date))
@@ -801,12 +854,12 @@ private struct PerformanceSection: View {
                 .foregroundStyle(FinTheme.accent)
                 .symbolSize(48)
 
-                if let benchmarkReturn = snapshot.benchmarkReturn, focus != .portfolio {
+                if let benchmarkReturn = snapshot.benchmarkReturn {
                     PointMark(
                         x: .value("Selected date", snapshot.date),
                         y: .value("SPY return", benchmarkReturn)
                     )
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Self.benchmarkTint)
                     .symbolSize(42)
                 }
             }
@@ -830,16 +883,166 @@ private struct PerformanceSection: View {
         }
     }
 
-    private var chartLegend: some View {
-        HStack(spacing: 14) {
-            legendItem("Portfolio", color: FinTheme.accent)
-            legendItem("SPY", color: .secondary)
-            if focus == .spread {
-                legendItem("Spread", color: FinTheme.amber)
+    // 1W/1M/3M/YTD/All chips — the selected window re-fetches the per-user
+    // performance series for that many days.
+    private var rangeChips: some View {
+        HStack(spacing: 6) {
+            ForEach(PerfRange.allCases) { item in
+                let isSelected = range == item
+                Button {
+                    guard range != item else { return }
+                    range = item
+                    selectedDate = nil
+                    Task { await store.refresh(benchmarkDays: item.days) }
+                } label: {
+                    Text(item.rawValue)
+                        .font(.system(size: 12.5, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(
+                            isSelected ? FinTheme.accent : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                        .foregroundStyle(isSelected ? FinTheme.onAccent : FinTheme.textSecondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
         }
-        .font(.caption.weight(.medium))
-        .foregroundStyle(.secondary)
+    }
+
+    // Best/worst single day and the thesis hit-rate as a row of small tiles.
+    @ViewBuilder
+    private func supportTiles(_ series: PerformanceSeries) -> some View {
+        let extremes = bestWorstDay(series)
+        let hitRate = ThesisOutcomeEngine.hitRate(ThesisOutcomeEngine.closedTheses(from: paperTrades))
+        HStack(spacing: 8) {
+            supportTile(
+                "Best day",
+                value: extremes.map { percentLabel($0.best) } ?? "—",
+                color: FinTheme.accent
+            )
+            supportTile(
+                "Worst day",
+                value: extremes.map { percentLabel($0.worst) } ?? "—",
+                color: FinTheme.danger
+            )
+            supportTile(
+                "Thesis hit-rate",
+                value: hitRate.total > 0 ? "\(hitRate.confirmed) of \(hitRate.total)" : "—",
+                color: FinTheme.textPrimary
+            )
+        }
+    }
+
+    private func supportTile(_ label: String, value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(FinTheme.textTertiary)
+            Text(value)
+                .font(.system(size: 16.5, weight: .heavy))
+                .monospacedDigit()
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .background(FinTheme.card)
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(FinTheme.line, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    // Day-over-day move extremes along the cumulative curve.
+    private func bestWorstDay(_ series: PerformanceSeries) -> (best: Double, worst: Double)? {
+        let points = series.portfolio
+        guard points.count >= 2 else { return nil }
+        var deltas: [Double] = []
+        for index in 1..<points.count {
+            deltas.append(points[index].returnPct - points[index - 1].returnPct)
+        }
+        guard let best = deltas.max(), let worst = deltas.min() else { return nil }
+        return (best, worst)
+    }
+
+    // MARK: - Empty state (screens-after-perf)
+
+    private var loadFailureMessage: String? {
+        if case .failed(let message) = store.loadState { return message }
+        return nil
+    }
+
+    private var emptyHero: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SectionLabel("Cumulative return · paper")
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("0.00%")
+                    .font(.system(size: 40, weight: .heavy))
+                    .tracking(-1)
+                    .monospacedDigit()
+                    .foregroundStyle(FinTheme.textTertiary)
+                Text("no trades yet")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(FinTheme.textTertiary)
+            }
+        }
+    }
+
+    // Ghost curve with the "Your curve starts here" overlay; surfaces the load
+    // error in place of the invitation copy when the fetch actually failed.
+    private var emptyStateCard: some View {
+        GlassPanel {
+            ZStack {
+                GhostCurve()
+                    .stroke(
+                        FinTheme.accent.opacity(0.18),
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [1, 7])
+                    )
+                VStack(spacing: 10) {
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(FinTheme.accent)
+                        .frame(width: 44, height: 44)
+                        .background(FinTheme.accentDim, in: Circle())
+                    Text(loadFailureMessage == nil ? "Your curve starts here" : "Performance is unavailable")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(FinTheme.textPrimary)
+                    Text(loadFailureMessage
+                        ?? "Place your first paper trade from any research result and we'll track it against SPY.")
+                        .font(.footnote)
+                        .foregroundStyle(FinTheme.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
+                }
+            }
+            .frame(height: 190)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var emptyStateCTA: some View {
+        Button(action: onSwitchToResearch) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                Text("Run a research query")
+            }
+            .font(.system(size: 15.5, weight: .bold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(FinTheme.accentDim, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(FinTheme.accent.opacity(0.3), lineWidth: 1)
+        }
+        .foregroundStyle(FinTheme.accent)
     }
 
     private var allocationChart: some View {
@@ -978,14 +1181,6 @@ private struct PerformanceSection: View {
         CGFloat(max(180, positionPLData.count * 34))
     }
 
-    private var emptyChartMessage: String {
-        if case .failed(let message) = store.loadState { return message }
-        if store.performance == nil {
-            return "Performance data is momentarily unavailable. Pull to refresh to try again."
-        }
-        return "Place a paper trade and your equity curve vs SPY will appear here."
-    }
-
     private var totalMarketValue: Double? {
         let values = store.positions.compactMap(\.marketValue)
         guard !values.isEmpty else { return nil }
@@ -1030,17 +1225,6 @@ private struct PerformanceSection: View {
         return portfolio - benchmark
     }
 
-    private func spreadPoints(in series: PerformanceSeries) -> [ReturnPoint] {
-        series.portfolio.compactMap { point in
-            guard let benchmark = nearestPoint(to: point.date, in: series.benchmark) else { return nil }
-            return ReturnPoint(
-                date: point.date,
-                returnPct: point.returnPct - benchmark.returnPct,
-                equity: nil
-            )
-        }
-    }
-
     private func nearestPoint(to date: Date, in points: [ReturnPoint]) -> ReturnPoint? {
         points.min {
             abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
@@ -1054,32 +1238,6 @@ private struct PerformanceSection: View {
             Text(value)
                 .font(.subheadline.monospacedDigit().weight(.medium))
                 .foregroundStyle(valueColor ?? .primary)
-        }
-    }
-
-    private func metricTile(_ title: String, value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title.uppercased())
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.headline.monospacedDigit().weight(.bold))
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(color.opacity(0.10))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private func legendItem(_ label: String, color: Color) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-            Text(label)
         }
     }
 
@@ -1110,6 +1268,24 @@ private struct PerformanceSection: View {
             return sign + String(format: "$%.1fK", absValue / 1_000)
         }
         return sign + String(format: "$%.0f", absValue)
+    }
+}
+
+// The empty Performance chart's dashed "future curve", scaled from the comp's
+// 329×190 SVG path (screens-after-perf.jsx).
+private struct GhostCurve: Shape {
+    func path(in rect: CGRect) -> Path {
+        let sx = rect.width / 329
+        let sy = rect.height / 190
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+        }
+        var path = Path()
+        path.move(to: point(0, 95))
+        path.addCurve(to: point(100, 78), control1: point(40, 95), control2: point(60, 70))
+        path.addCurve(to: point(230, 52), control1: point(150, 88), control2: point(180, 40))
+        path.addCurve(to: point(329, 36), control1: point(270, 60), control2: point(300, 30))
+        return path
     }
 }
 

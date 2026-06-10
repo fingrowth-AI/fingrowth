@@ -39,6 +39,9 @@ struct ResearchView: View {
     // result's plain-language lead must address what was *submitted*, not whatever
     // the user has since typed.
     @State private var submittedQuery: String = ""
+    // The analysis type the in-flight run was submitted with, for the pinned
+    // query card's route badge (the picker stays editable during a run).
+    @State private var submittedType: AnalysisType = .technical
     @State private var ticker: String = ""
     @State private var analysisType: AnalysisType = .technical
     // V12-04: once the user picks the analysis type themselves, stop
@@ -84,7 +87,8 @@ struct ResearchView: View {
             ZStack {
                 MarketBackground()
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
+                    // FG spacing rhythm: 16pt screen margins, 12pt between cards.
+                    VStack(alignment: .leading, spacing: 12) {
                         researchHeader
                         querySection
                         if let auditErrorMessage {
@@ -111,7 +115,9 @@ struct ResearchView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .navigationTitle("Research")
+            // The screens-after header is custom (title + privacy badge), so the
+            // system navigation bar stays hidden.
+            .toolbar(.hidden, for: .navigationBar)
             .onAppear { ensureController() }
             .onChange(of: controller?.finalResult) { _, newValue in
                 persistIfNeeded(newValue)
@@ -138,81 +144,56 @@ struct ResearchView: View {
 
     // MARK: - Query
 
+    // Screens-after header: heavy title, green-lock "Private by design" badge,
+    // one-line promise underneath. Rendered on the page background, not a card.
     private var researchHeader: some View {
-        GlassPanel {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .center, spacing: 12) {
-                    Image(systemName: "sparkle.magnifyingglass")
-                        .font(.title2.weight(.semibold))
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Research")
+                    .font(.system(size: 32, weight: .heavy))
+                    .tracking(-0.5)
+                    .foregroundStyle(FinTheme.textPrimary)
+                Spacer()
+                HStack(spacing: 5) {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(FinTheme.accent)
-                        .frame(width: 44, height: 44)
-                        .background(FinTheme.accent.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Research")
-                            .font(.title2.weight(.bold))
-                        Text("Ask, stream, and review market context.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                HStack(spacing: 10) {
-                    statusPill("On-device PII", systemImage: "lock.fill", color: FinTheme.mint)
-                    statusPill("Research only", systemImage: "doc.text.magnifyingglass", color: FinTheme.amber)
+                    Text("Private by design")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(FinTheme.textSecondary)
                 }
             }
+            Text("Ask anything about a stock — answers stay research-only.")
+                .font(.subheadline)
+                .foregroundStyle(FinTheme.textSecondary)
         }
-        .padding(.top, 8)
+        .padding(.top, 12)
+        .padding(.horizontal, 4)
     }
 
     private var querySection: some View {
-        Card(title: "Query") {
-            VStack(alignment: .leading, spacing: 12) {
-                TextField("Ask a question", text: $query, axis: .vertical)
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 14) {
+                // Free-form question, set directly on the card like the comp —
+                // no nested input well.
+                TextField("Ask anything about a stock", text: $query, axis: .vertical)
+                    .font(.system(size: 19, weight: .medium))
+                    .foregroundStyle(FinTheme.textPrimary)
                     .lineLimit(2...4)
                     .textFieldStyle(.plain)
-                    .padding(12)
-                    .background(FinTheme.field(for: colorScheme))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .onChange(of: query) { _, newValue in autoClassifyAnalysisType(newValue) }
 
                 tickerField
 
-                // V12-04: the type is auto-detected from the question, but a
-                // user pick through this binding marks it overridden so it sticks.
-                Picker("Type", selection: Binding(
-                    get: { analysisType },
-                    set: { analysisType = $0; analysisTypeUserOverridden = true }
-                )) {
-                    ForEach(AnalysisType.allCases) { type in
-                        Text(type.rawValue.capitalized).tag(type)
-                    }
-                }
-                .pickerStyle(.segmented)
+                // Edge-to-edge hairline separating the question from the controls.
+                Rectangle()
+                    .fill(FinTheme.line)
+                    .frame(height: 1)
+                    .padding(.horizontal, -16)
 
-                if !analysisTypeUserOverridden {
-                    Label("Auto-detected from your question — tap to change", systemImage: "wand.and.stars")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                typeSelector
 
-                HStack {
-                    Button(action: run) {
-                        Label("Run analysis", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canSubmit)
-
-                    if controller?.isRunning == true {
-                        Button(role: .destructive, action: { controller?.cancel() }) {
-                            Label("Cancel", systemImage: "stop.fill")
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
+                runButton
 
                 // V12-05: example queries so a new user isn't facing a blank
                 // box. Shown while the query is empty; tapping one fills it (and
@@ -220,11 +201,93 @@ struct ResearchView: View {
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
                     exampleQueries
                 }
-
-                Text("Streams from the backend configured in Settings.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    // Custom inset segmented control (the comp's #39433D-on-inset segments).
+    // V12-04: the type is auto-detected from the question; the AUTO badge marks
+    // an auto-classified selection and disappears once the user picks a type
+    // themselves (which also makes their choice stick).
+    private var typeSelector: some View {
+        HStack(spacing: 0) {
+            ForEach(AnalysisType.allCases) { type in
+                let isSelected = analysisType == type
+                Button {
+                    analysisType = type
+                    analysisTypeUserOverridden = true
+                } label: {
+                    Text(type.rawValue.capitalized)
+                        .font(.system(size: 13, weight: isSelected ? .bold : .medium))
+                        .foregroundStyle(isSelected ? FinTheme.textPrimary : FinTheme.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(
+                            isSelected ? FinTheme.segment : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                        .overlay(alignment: .topTrailing) {
+                            if isSelected && !analysisTypeUserOverridden {
+                                Text("AUTO")
+                                    .font(.system(size: 9, weight: .heavy))
+                                    .tracking(0.3)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(
+                                        FinTheme.accent,
+                                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    )
+                                    .foregroundStyle(FinTheme.onAccent)
+                                    .offset(x: 4, y: -7)
+                                    .accessibilityLabel("Auto-detected from your question")
+                            }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(FinTheme.inset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        // Headroom so the AUTO badge can overflow the segment upward.
+        .padding(.top, 6)
+    }
+
+    // Full-width primary action: solid green with dark-forest content while a
+    // run can start; swaps to a Cancel affordance while the stream is live.
+    @ViewBuilder
+    private var runButton: some View {
+        if controller?.isRunning == true {
+            Button {
+                controller?.cancel()
+            } label: {
+                Label("Cancel", systemImage: "stop.fill")
+                    .font(.system(size: 16.5, weight: .bold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(FinTheme.inset, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .foregroundStyle(FinTheme.textPrimary)
+        } else {
+            Button(action: run) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                    Text("Run analysis")
+                }
+                .font(.system(size: 16.5, weight: .bold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(
+                canSubmit ? FinTheme.accent : FinTheme.inset,
+                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+            )
+            .foregroundStyle(canSubmit ? FinTheme.onAccent : FinTheme.textTertiary)
+            .disabled(!canSubmit)
         }
     }
 
@@ -392,38 +455,51 @@ struct ResearchView: View {
 
     // MARK: - Progress
 
-    private func progressSection(controller: AnalysisStreamController) -> some View {
-        Card(title: "Progress") {
-            VStack(alignment: .leading, spacing: 12) {
-                statusLine(controller: controller)
-                stageDots(controller: controller)
-            }
-        }
+    private enum StageState {
+        case done, active, todo
     }
 
+    // Streaming progress per screens-after: a pinned query card, then a
+    // vertical timeline (green check = done, spinner = active, outline = todo).
+    // Shown only while a run is live or has failed — the result screen replaces
+    // it on completion, and the compose screen carries no idle progress card.
     @ViewBuilder
-    private func statusLine(controller: AnalysisStreamController) -> some View {
-        switch controller.phase {
-        case .idle:
-            Label("Idle", systemImage: "circle.dashed")
-                .foregroundStyle(.secondary)
-        case .running(let stage):
-            HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                Text(stageLabel(for: stage) + "…")
-                    .font(.subheadline)
+    private func progressSection(controller: AnalysisStreamController) -> some View {
+        let visible: Bool = {
+            switch controller.phase {
+            case .running, .failed: return true
+            case .idle, .completed: return false
             }
-        case .completed:
-            Label("Analysis complete", systemImage: "checkmark.seal.fill")
-                .foregroundStyle(.green)
-        case .failed:
-            Label("Failed", systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
+        }()
+        if visible {
+            GlassPanel {
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.subheadline)
+                        .foregroundStyle(FinTheme.textTertiary)
+                    Text("“\(submittedQuery)”")
+                        .font(.subheadline.italic())
+                        .foregroundStyle(FinTheme.textSecondary)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                    Text(submittedType.rawValue.uppercased())
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(FinTheme.textSecondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            FinTheme.inset,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                }
+            }
+            GlassPanel {
+                stageTimeline(controller: controller)
+            }
         }
     }
 
-    private func stageDots(controller: AnalysisStreamController) -> some View {
+    private func stageTimeline(controller: AnalysisStreamController) -> some View {
         let seen = Set(controller.stages.map { $0.lowercased() })
         let currentStage: String? = {
             if case .running(let stage) = controller.phase {
@@ -431,28 +507,86 @@ struct ResearchView: View {
             }
             return nil
         }()
-        // A stage is "done" once a later stage is in flight or the run has
-        // completed — the wire only flips once per phase, so the current
-        // stage is reported as `seen` while it's still in progress.
         let completedRun: Bool = {
             if case .completed = controller.phase { return true }
             return false
         }()
-        return HStack(spacing: 12) {
+        return VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(Self.stages.enumerated()), id: \.element.wire) { index, stage in
-                let isCurrent = currentStage == stage.wire
+                // A stage is "done" once a later stage is in flight or the run
+                // has completed — the wire only flips once per phase, so the
+                // current stage is reported as `seen` while still in progress.
                 let laterSeen = Self.stages.dropFirst(index + 1).contains { seen.contains($0.wire) }
-                let isDone = completedRun || laterSeen
-                HStack(spacing: 6) {
-                    Image(systemName: isDone
-                          ? "checkmark.circle.fill"
-                          : (isCurrent ? "circle.dotted" : "circle"))
-                        .foregroundStyle(isDone ? .green : (isCurrent ? .accentColor : .secondary))
-                    Text(stage.label)
-                        .font(.caption)
-                        .foregroundStyle(isDone || isCurrent ? .primary : .secondary)
+                let state: StageState = (completedRun || laterSeen)
+                    ? .done
+                    : (currentStage == stage.wire ? .active : .todo)
+                let isLast = index == Self.stages.count - 1
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(spacing: 4) {
+                        stageBadge(state)
+                        if !isLast {
+                            Rectangle()
+                                .fill(state == .done ? FinTheme.accent.opacity(0.5) : FinTheme.line)
+                                .frame(width: 2, height: 26)
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(stage.label)
+                            .font(.system(size: 15.5, weight: .bold))
+                            .foregroundStyle(state == .todo ? FinTheme.textTertiary : FinTheme.textPrimary)
+                        Text(stageDescription(stage.wire, state: state, controller: controller))
+                            .font(.caption)
+                            .fontWeight(state == .active ? .semibold : .regular)
+                            .foregroundStyle(state == .active ? FinTheme.accent : FinTheme.textTertiary)
+                    }
+                    Spacer(minLength: 0)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func stageBadge(_ state: StageState) -> some View {
+        switch state {
+        case .done:
+            Image(systemName: "checkmark")
+                .font(.system(size: 11, weight: .heavy))
+                .foregroundStyle(FinTheme.onAccent)
+                .frame(width: 24, height: 24)
+                .background(FinTheme.accent, in: Circle())
+        case .active:
+            ProgressView()
+                .controlSize(.small)
+                .tint(FinTheme.accent)
+                .frame(width: 24, height: 24)
+        case .todo:
+            Circle()
+                .stroke(FinTheme.line, lineWidth: 2)
+                .frame(width: 24, height: 24)
+        }
+    }
+
+    // One-line stage descriptions; Research reports the real counts once the
+    // packet has streamed in.
+    private func stageDescription(
+        _ wire: String,
+        state: StageState,
+        controller: AnalysisStreamController
+    ) -> String {
+        switch wire {
+        case "researching":
+            if let research = controller.research {
+                return "\(research.news.count) news items · \(research.filings.count) filings found"
+            }
+            return state == .active ? "Gathering filings & news…" : "Filings & news"
+        case "analyzing":
+            switch state {
+            case .active: return "Scoring technicals & sentiment…"
+            case .done: return "Report drafted"
+            case .todo: return "Technicals & narrative"
+            }
+        default:
+            return state == .active ? "Checking the risk gate…" : "Risk gate"
         }
     }
 
@@ -472,96 +606,68 @@ struct ResearchView: View {
                 newsHeadlines: AnalysisResultPresenter.headlines(from: final.research.news)
             )
             VStack(alignment: .leading, spacing: 12) {
-                // 1. Verdict — the 2-second takeaway, leading the result.
-                Card(title: "Result · \(final.ticker)") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(final.analysis.confidence.replacingOccurrences(of: "_", with: " ").capitalized)
-                                .font(.subheadline.weight(.semibold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(confidenceColor(final.analysis.confidence).opacity(0.15))
-                                .foregroundStyle(confidenceColor(final.analysis.confidence))
-                                .clipShape(Capsule())
-                            Spacer()
-                            Button {
-                                enqueuePaperTrade(
-                                    ticker: final.ticker,
-                                    sourceQuery: query,
-                                    sourceAnalysisType: analysisType,
-                                    sourceConfidence: final.analysis.confidence,
-                                    sourceResearchSessionID: lastPersistedSessionLinkID
-                                )
-                            } label: {
-                                Label("Test with paper trade", systemImage: "arrow.right.circle.fill")
-                                    .font(.subheadline)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                        }
+                // 1. Result header — big ticker + company, freshness, and the
+                // confidence dot (the comp's AfConfidence), on the page itself.
+                resultHeader(final)
 
-                        // One plain-language takeaway (backend deterministic
-                        // verdict; the narrative's lead sentence for the
-                        // general route). Detail follows in sections below.
-                        Text(presentation.takeaway)
-                            .font(.title3.weight(.semibold))
-                            .fixedSize(horizontal: false, vertical: true)
+                // 2. Verdict — the 2-second takeaway, leading the result.
+                Text(presentation.takeaway)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(FinTheme.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
 
-                        if let freshness = final.research.freshness?.priceDisplay {
-                            Label(freshness, systemImage: "clock")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                // 3. Stat strip — coverage at a glance.
+                statStrip(final)
 
-                // 2. Portfolio-context slot — directly under the verdict. Filled
+                // 4. Portfolio-context slot — directly under the verdict. Filled
                 // by the V11-01/V11-02 "What this means for you" section when the
-                // user holds the analyzed ticker; otherwise empty. (This is the
-                // slot the redesign brief reserved for portfolio awareness — it's
-                // already built, so it renders here rather than as a placeholder.)
+                // user holds the analyzed ticker; otherwise empty.
                 if let positionInsight {
                     positionInsightSection(positionInsight)
                 }
 
-                // 3. Signal-at-a-glance — the key interpretive tags as pills.
-                let pills = AnalysisResultPresenter.signalPills(from: final.analysis.technical)
-                if !pills.isEmpty {
-                    signalPillRow(pills)
-                }
-
-                // 4. What this means — chunked interpretation (no repeated numbers).
+                // 5. What this means — chunked interpretation (no repeated numbers).
                 whatThisMeansSection(final.analysis)
 
-                // 4b. The narrative, decomposed into scannable sections
-                // (headlines as bullets, context split out). Inline for the
-                // general route, where it *is* the body; collapsed supporting
-                // detail when the interpretation chunks above carry the meaning.
+                // 6. "What's moving TICKER" — the received headlines as rows with
+                // source pills. Supersedes the presenter's plainer "In the news"
+                // bullets whenever the structured news items are present.
+                let newsRows = headlineRows(from: final.research.news)
+                headlinesSection(ticker: final.ticker, rows: newsRows)
+
+                // 6b. The rest of the narrative, decomposed into scannable
+                // sections. Inline for the general route, where it *is* the body;
+                // collapsed supporting detail when the interpretation chunks
+                // above carry the meaning.
                 narrativeSections(
-                    presentation.sections,
+                    presentation.sections.filter { newsRows.isEmpty || $0.header != "In the news" },
                     inline: final.analysis.interpretation.isEmpty
                 )
 
-                // 5. A small price-vs-Bollinger-bands chart (V10-05).
+                // 7. Technicals — the key signals as a 2-up grid of inset tiles
+                // (value + interpretive note), with the chart and the full
+                // indicator list as collapsed drill-down below.
+                technicalsSection(final.analysis.technical)
+
                 if let bands = BollingerChartModel.make(from: final.analysis.technical) {
                     Card(title: "Price vs. Bollinger Bands") {
                         BollingerBandChart(point: bands)
                     }
                 }
 
-                // 6. Technical Indicators — drill-down detail, collapsed.
                 expandableSection(
-                    title: "Technical Indicators",
+                    title: "All indicators",
                     systemImage: "chart.xyaxis.line",
                     initiallyExpanded: AnalysisResultPresenter.indicatorsInitiallyExpanded
                 ) {
                     TechnicalIndicatorsView(indicators: final.analysis.technical)
                 }
 
-                // 7. Risk review — collapsed; the approve/flag state reads in the
-                // (compact) header rather than as a full section.
+                // 8. Risk gate — collapsed; the approve/flag state reads in the
+                // compact header rather than as a full section.
                 expandableSection(
-                    title: final.riskReview.approved ? "Risk · Approved" : "Risk · Flagged",
+                    title: final.riskReview.approved ? "Risk gate · Approved" : "Risk gate · Flagged",
                     systemImage: "shield.lefthalf.filled",
                     initiallyExpanded: false
                 ) {
@@ -582,27 +688,57 @@ struct ResearchView: View {
                     }
                 }
 
-                // 8. Disclaimer — always at the bottom.
+                // 9. CTA + disclaimer, always at the bottom.
+                Button {
+                    enqueuePaperTrade(
+                        ticker: final.ticker,
+                        sourceQuery: query,
+                        sourceAnalysisType: analysisType,
+                        sourceConfidence: final.analysis.confidence,
+                        sourceResearchSessionID: lastPersistedSessionLinkID
+                    )
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "flask")
+                        Text("Test with paper trade")
+                    }
+                    .font(.system(size: 16.5, weight: .bold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .background(FinTheme.accent, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .foregroundStyle(FinTheme.onAccent)
+                .padding(.top, 4)
+
                 Text(final.disclaimer)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
+                    .foregroundStyle(FinTheme.textTertiary)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
             }
         } else if controller.partialAnalysis != nil || controller.research != nil {
-            Card(title: "Partial result") {
-                VStack(alignment: .leading, spacing: 8) {
-                    if let research = controller.research {
-                        Text("Research: \(research.filings.count) filings, \(research.news.count) news items")
-                            .font(.footnote)
-                    }
-                    if let partial = controller.partialAnalysis {
-                        Text("Confidence: \(partial.confidence)")
-                            .font(.footnote)
-                        if !partial.technical.isEmpty {
-                            Text("Indicators: \(partial.technical.keys.sorted().joined(separator: ", "))")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+            // Streaming preview: what's already arrived, with shimmer rows
+            // standing in for the rest of the report.
+            VStack(alignment: .leading, spacing: 8) {
+                SectionLabel("Streaming in")
+                    .padding(.horizontal, 4)
+                GlassPanel {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if let research = controller.research {
+                            Text("Coverage so far — \(research.news.count) news items and \(research.filings.count) filings.")
+                                .font(.subheadline)
+                                .foregroundStyle(FinTheme.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
+                        if let partial = controller.partialAnalysis, !partial.technical.isEmpty {
+                            Text("Indicators: \(partial.technical.keys.sorted().map(IndicatorFormatter.humanLabel).joined(separator: ", "))")
+                                .font(.footnote)
+                                .foregroundStyle(FinTheme.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        ShimmerLines()
                     }
                 }
             }
@@ -641,32 +777,248 @@ struct ResearchView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    // Signal-at-a-glance pills: RSI / MACD / band state as a tight colored row.
-    private func signalPillRow(_ pills: [SignalPill]) -> some View {
-        HStack(spacing: 8) {
-            ForEach(pills) { pill in
-                HStack(spacing: 4) {
-                    Text(pill.indicator)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(pill.state)
-                        .font(.caption2.weight(.semibold))
+    // Result header: ticker + company name, the data's as-of line, and the
+    // confidence dot — rendered on the page background like the comp.
+    private func resultHeader(_ final: AnalysisResponse) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(final.ticker)
+                        .font(.system(size: 28, weight: .heavy))
+                        .tracking(-0.4)
+                        .foregroundStyle(FinTheme.textPrimary)
+                    if let name = TickerCatalog.name(for: final.ticker) {
+                        Text(name)
+                            .font(.subheadline)
+                            .foregroundStyle(FinTheme.textSecondary)
+                            .lineLimit(1)
+                    }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(signalTint(pill.tone).opacity(0.15))
-                .foregroundStyle(signalTint(pill.tone))
-                .clipShape(Capsule())
+                if let freshness = final.research.freshness?.priceDisplay {
+                    Label(freshness, systemImage: "clock")
+                        .font(.caption)
+                        .foregroundStyle(FinTheme.textTertiary)
+                }
             }
-            Spacer(minLength: 0)
+            Spacer()
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(confidenceColor(final.analysis.confidence))
+                    .frame(width: 7, height: 7)
+                Text(final.analysis.confidence.replacingOccurrences(of: "_", with: " ").capitalized
+                    + " confidence")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(FinTheme.textSecondary)
+            }
+            .padding(.top, 6)
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 4)
+    }
+
+    // Coverage at a glance: news / filings / overall sentiment in one card-style
+    // strip with hairline column separators.
+    private func statStrip(_ final: AnalysisResponse) -> some View {
+        HStack(spacing: 0) {
+            statCell(value: "\(final.research.news.count)", label: "News items")
+            Rectangle().fill(FinTheme.line).frame(width: 1)
+            statCell(value: "\(final.research.filings.count)", label: "Filings")
+            Rectangle().fill(FinTheme.line).frame(width: 1)
+            statCell(value: sentimentLabel(final.research.news), label: "Sentiment")
+        }
+        .background(FinTheme.card)
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(FinTheme.line, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func statCell(value: String, label: String) -> some View {
+        VStack(spacing: 1) {
+            Text(value)
+                .font(.system(size: 20, weight: .heavy))
+                .monospacedDigit()
+                .foregroundStyle(FinTheme.textPrimary)
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(FinTheme.textTertiary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 13)
+    }
+
+    // One word for the average tone of the received headlines — display-only
+    // bucketing of the packet's own sentiment scores, no new math on the wire.
+    private func sentimentLabel(_ news: [JSONValue]) -> String {
+        let scores: [Double] = news.compactMap { item in
+            guard case .object(let fields) = item else { return nil }
+            switch fields["sentiment_score"] {
+            case .double(let value): return value
+            case .int(let value): return Double(value)
+            default: return nil
+            }
+        }
+        guard !scores.isEmpty else { return "—" }
+        let mean = scores.reduce(0, +) / Double(scores.count)
+        if mean > 0.15 { return "Positive" }
+        if mean < -0.15 { return "Negative" }
+        return "Mixed"
+    }
+
+    // The received news items as (headline, source) rows for the
+    // "What's moving TICKER" section.
+    private func headlineRows(from news: [JSONValue]) -> [(headline: String, source: String?)] {
+        news.prefix(3).compactMap { item in
+            guard case .object(let fields) = item,
+                  let headline = fields["headline"]?.asString?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !headline.isEmpty else { return nil }
+            return (headline, fields["source"]?.asString)
         }
     }
 
-    private func signalTint(_ tone: SignalTone) -> Color {
-        switch tone {
-        case .caution: return FinTheme.amber
-        case .positive: return FinTheme.accent
-        case .neutral: return .secondary
+    @ViewBuilder
+    private func headlinesSection(ticker: String, rows: [(headline: String, source: String?)]) -> some View {
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                SectionLabel("What's moving \(ticker)")
+                    .padding(.horizontal, 4)
+                GlassPanel {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(row.headline)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(FinTheme.textPrimary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let source = row.source, !source.isEmpty {
+                                    Label(source, systemImage: "newspaper")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(FinTheme.textSecondary)
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 3)
+                                        .background(
+                                            FinTheme.inset,
+                                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        )
+                                }
+                            }
+                            .padding(.top, index == 0 ? 0 : 12)
+                            .padding(.bottom, index == rows.count - 1 ? 0 : 12)
+                            if index < rows.count - 1 {
+                                Rectangle().fill(FinTheme.line).frame(height: 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Technicals grid
+
+    private struct TechnicalTile: Identifiable {
+        let label: String
+        let value: String
+        let note: String
+        let tone: Color
+        var id: String { label }
+    }
+
+    // The key signals as a 2-up grid of inset tiles — value plus interpretive
+    // note, same thresholds as the indicator card's tags.
+    @ViewBuilder
+    private func technicalsSection(_ technical: [String: JSONValue]) -> some View {
+        let tiles = technicalTiles(technical)
+        if !tiles.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                SectionLabel("Technicals")
+                    .padding(.horizontal, 4)
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                    spacing: 8
+                ) {
+                    ForEach(tiles) { tile in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(tile.label)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(FinTheme.textTertiary)
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text(tile.value)
+                                    .font(.system(size: 17, weight: .heavy))
+                                    .monospacedDigit()
+                                    .foregroundStyle(FinTheme.textPrimary)
+                                Text(tile.note)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(tile.tone)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(FinTheme.card)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                .stroke(FinTheme.line, lineWidth: 1)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    }
+                }
+            }
+        }
+    }
+
+    private func technicalTiles(_ technical: [String: JSONValue]) -> [TechnicalTile] {
+        var tiles: [TechnicalTile] = []
+
+        if let rsi = numberValue(technical["rsi"]) {
+            let note = rsi >= 70 ? "Overbought" : (rsi <= 30 ? "Oversold" : "Neutral")
+            let tone = rsi >= 70 || rsi <= 30 ? FinTheme.amber : FinTheme.textSecondary
+            tiles.append(TechnicalTile(
+                label: "RSI · 14d", value: String(format: "%.0f", rsi), note: note, tone: tone
+            ))
+        }
+
+        if case .object(let macd)? = technical["macd"], let histogram = numberValue(macd["histogram"]) {
+            let note = histogram > 0 ? "Bullish" : (histogram < 0 ? "Bearish" : "Flat")
+            let tone = histogram > 0
+                ? FinTheme.accent
+                : (histogram < 0 ? FinTheme.amber : FinTheme.textSecondary)
+            tiles.append(TechnicalTile(
+                label: "MACD", value: String(format: "%+.2f", histogram), note: note, tone: tone
+            ))
+        }
+
+        if case .object(let bands)? = technical["bollinger"],
+           let close = numberValue(technical["latest_close"]),
+           let upper = numberValue(bands["upper"]),
+           let lower = numberValue(bands["lower"]) {
+            let value = close > upper ? "High" : (close < lower ? "Low" : "Mid")
+            let note = close > upper || close < lower ? "Outside bands" : "Inside bands"
+            let tone = close > upper || close < lower ? FinTheme.amber : FinTheme.textSecondary
+            tiles.append(TechnicalTile(label: "Bollinger", value: value, note: note, tone: tone))
+        }
+
+        if let sma = numberValue(technical["sma_20"]), let close = numberValue(technical["latest_close"]) {
+            let above = close > sma
+            tiles.append(TechnicalTile(
+                label: "20d avg",
+                value: String(format: "$%.2f", sma),
+                note: above ? "Above avg" : (close < sma ? "Below avg" : "At avg"),
+                tone: above ? FinTheme.accent : FinTheme.textSecondary
+            ))
+        }
+
+        return tiles
+    }
+
+    private func numberValue(_ value: JSONValue?) -> Double? {
+        switch value {
+        case .double(let double): return double
+        case .int(let int): return Double(int)
+        default: return nil
         }
     }
 
@@ -809,32 +1161,48 @@ struct ResearchView: View {
     @ViewBuilder
     private var historySection: some View {
         if !history.isEmpty {
-            Card(title: "History") {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(history.prefix(10)) { entry in
-                        Button {
-                            selectedHistoryEntry = entry
-                        } label: {
-                            HStack(alignment: .firstTextBaseline) {
-                                VStack(alignment: .leading, spacing: 2) {
+            let recent = Array(history.prefix(10))
+            VStack(alignment: .leading, spacing: 8) {
+                SectionLabel("Recent")
+                    .padding(.horizontal, 4)
+                GlassPanel {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(recent.enumerated()), id: \.element.id) { index, entry in
+                            Button {
+                                selectedHistoryEntry = entry
+                            } label: {
+                                HStack(spacing: 12) {
                                     Text(entry.ticker)
-                                        .font(.subheadline.weight(.semibold))
-                                    Text(entry.query)
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
+                                        .font(.system(size: 11.5, weight: .heavy))
+                                        .tracking(0.3)
+                                        .foregroundStyle(FinTheme.textPrimary)
+                                        .padding(.horizontal, 6)
+                                        .frame(minWidth: 42, minHeight: 30)
+                                        .background(
+                                            FinTheme.inset,
+                                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        )
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(entry.query)
+                                            .font(.subheadline.weight(.medium))
+                                            .foregroundStyle(FinTheme.textPrimary)
+                                            .lineLimit(1)
+                                        Text(entry.createdAt, style: .date)
+                                            .font(.caption)
+                                            .foregroundStyle(FinTheme.textTertiary)
+                                    }
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(FinTheme.textTertiary)
                                 }
-                                Spacer()
-                                Text(entry.createdAt, style: .date)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                .contentShape(Rectangle())
+                                .padding(.vertical, 11)
                             }
-                            .contentShape(Rectangle())
-                            .padding(.vertical, 8)
-                        }
-                        .buttonStyle(.plain)
-                        if entry != history.prefix(10).last {
-                            Divider()
+                            .buttonStyle(.plain)
+                            if index < recent.count - 1 {
+                                Rectangle().fill(FinTheme.line).frame(height: 1)
+                            }
                         }
                     }
                 }
@@ -1004,6 +1372,7 @@ struct ResearchView: View {
             // (start() clears the prior finalResult), so the lead assessment is
             // framed against the question actually asked — not a later edit.
             submittedQuery = rawQuery
+            submittedType = type
             controller?.start(query: request, profile: generalized.map(Self.wireProfile))
         }
     }
@@ -1089,20 +1458,13 @@ struct ResearchView: View {
         onSwitchToPortfolio()
     }
 
-    private func stageLabel(for wire: String) -> String {
-        let normalized = wire.lowercased()
-        if let match = Self.stages.first(where: { $0.wire == normalized }) {
-            return match.label
-        }
-        return wire.capitalized
-    }
-
+    // Confidence dot colors per the comp's AfConfidence: green for a solid
+    // read, amber for a thin one, muted when there wasn't enough data.
     private func confidenceColor(_ value: String) -> Color {
         switch value.lowercased() {
-        case "high": return .green
-        case "moderate", "medium": return .orange
-        case "low": return .red
-        default: return .secondary
+        case "high", "moderate", "medium": return FinTheme.accent
+        case "low": return FinTheme.amber
+        default: return FinTheme.textTertiary
         }
     }
 }
@@ -1123,7 +1485,8 @@ private struct Card<Content: View>: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(title.uppercased())
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .tracking(0.9)
+                    .foregroundStyle(FinTheme.textTertiary)
                 content
             }
         }
@@ -1176,16 +1539,6 @@ private struct ExpandableCard<Content: View>: View {
     }
 }
 
-private func statusPill(_ title: String, systemImage: String, color: Color) -> some View {
-    Label(title, systemImage: systemImage)
-        .font(.caption.weight(.semibold))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(color.opacity(0.14))
-        .foregroundStyle(color)
-        .clipShape(Capsule())
-}
-
 // MARK: - Section bodies
 
 private struct TechnicalIndicatorsView: View {
@@ -1195,6 +1548,35 @@ private struct TechnicalIndicatorsView: View {
     // unpacks nested MACD/Bollinger objects identically.
     var body: some View {
         IndicatorRowsView(indicators: indicators)
+    }
+}
+
+// Placeholder rows for the report still streaming in (the comp's shimmer
+// bars): inset-colored bars pulsing gently, widths tapering like prose.
+private struct ShimmerLines: View {
+    @State private var pulsing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            bar(fraction: 0.92)
+            bar(fraction: 0.78)
+            bar(fraction: 0.55)
+        }
+        .accessibilityHidden(true)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                pulsing = true
+            }
+        }
+    }
+
+    private func bar(fraction: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(FinTheme.inset)
+            .frame(height: 11)
+            .frame(maxWidth: .infinity)
+            .scaleEffect(x: fraction, anchor: .leading)
+            .opacity(pulsing ? 0.45 : 1)
     }
 }
 

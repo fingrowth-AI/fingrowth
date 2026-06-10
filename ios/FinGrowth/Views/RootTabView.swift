@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct RootTabView: View {
     @Bindable var settings: AppSettings
@@ -84,7 +85,8 @@ struct RootTabView: View {
                 PortfolioView(
                     store: portfolioStore,
                     paperTradePrefill: paperTradePrefill,
-                    gemma: gemma
+                    gemma: gemma,
+                    onSwitchToResearch: { selection = .research }
                 )
             } else {
                 ProgressView()
@@ -102,33 +104,123 @@ struct RootTabView: View {
     }
 }
 
+// FG design tokens — the "Refined OLED" direction from design/screens-after.jsx:
+// dark green-tinted neutrals, structured cards, one green accent. The dark
+// values are the reference verbatim; light values are derived equivalents so
+// the system-appearance setting keeps working. Spacing rhythm app-wide: 16pt
+// screen margins, 12pt between cards, 18pt card radius, 1px `line` borders.
 enum FinTheme {
-    static let accent = Color(red: 0.00, green: 0.78, blue: 0.36)
-    static let mint = Color(red: 0.00, green: 0.78, blue: 0.36)
-    static let violet = Color(red: 0.42, green: 0.42, blue: 0.48)
-    static let amber = Color(red: 0.96, green: 0.64, blue: 0.16)
-    static let danger = Color(red: 0.92, green: 0.19, blue: 0.25)
+    // Accents (appearance-invariant).
+    static let accent = Color(red: 0x34 / 255.0, green: 0xD8 / 255.0, blue: 0x7B / 255.0)
+    static let mint = accent
+    static let amber = Color(red: 0xE9 / 255.0, green: 0xA2 / 255.0, blue: 0x3B / 255.0)
+    static let danger = Color(red: 0xFF / 255.0, green: 0x62 / 255.0, blue: 0x59 / 255.0)
+    // Dim washes behind green/amber chips (FG.greenDim / FG.amberDim).
+    static let accentDim = accent.opacity(0.13)
+    static let amberDim = amber.opacity(0.14)
+    // Text/icon color on a solid green fill (the dark forest from the comps).
+    static let onAccent = Color(red: 0x05 / 255.0, green: 0x23 / 255.0, blue: 0x0F / 255.0)
 
-    static func page(for colorScheme: ColorScheme) -> Color {
-        colorScheme == .dark ? .black : .white
+    // Surfaces (dynamic). FG.bg / FG.cardSolid / FG.inset / FG.line.
+    static let pageBG = dynamic(dark: 0x0A0D0B, light: 0xF4F6F4)
+    static let card = dynamic(dark: 0x141A16, light: 0xFFFFFF)
+    static let inset = dynamic(dark: 0x1D2420, light: 0xE9EDEA)
+    // Selected segment fill inside an inset segmented control.
+    static let segment = dynamic(dark: 0x39433D, light: 0xFFFFFF)
+    static let line = Color(UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.07)
+            : UIColor.black.withAlphaComponent(0.08)
+    })
+
+    // Text tiers (FG.t1 / FG.t2 / FG.t3).
+    static let textPrimary = dynamic(dark: 0xF2F5F3, light: 0x131715)
+    static let textSecondary = dynamic(dark: 0x94A29B, light: 0x5C6862)
+    static let textTertiary = dynamic(dark: 0x5F6B65, light: 0x8B958F)
+
+    static func page(for colorScheme: ColorScheme) -> Color { pageBG }
+
+    static func panel(for colorScheme: ColorScheme) -> Color { card }
+
+    static func field(for colorScheme: ColorScheme) -> Color { inset }
+
+    static func border(for colorScheme: ColorScheme) -> Color { line }
+
+    private static func dynamic(dark: UInt32, light: UInt32) -> Color {
+        Color(UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(rgb: dark) : UIColor(rgb: light)
+        })
     }
 
-    static func panel(for colorScheme: ColorScheme) -> Color {
-        colorScheme == .dark
-            ? Color(red: 0.04, green: 0.04, blue: 0.04)
-            : .white
-    }
+    // UIKit-level chrome the SwiftUI API can't reach: the flat tab bar (hairline
+    // top border, green active / tertiary inactive — FgTabBarAfter) and the
+    // inset segmented controls. Called once at app startup.
+    static func applyChrome() {
+        let tabBar = UITabBarAppearance()
+        tabBar.configureWithDefaultBackground()
+        tabBar.backgroundColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor(rgb: 0x0A0D0B).withAlphaComponent(0.92)
+                : UIColor(rgb: 0xF4F6F4).withAlphaComponent(0.92)
+        }
+        tabBar.shadowColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor.white.withAlphaComponent(0.07)
+                : UIColor.black.withAlphaComponent(0.08)
+        }
+        let inactive = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(rgb: 0x6E7A73) : UIColor(rgb: 0x8B958F)
+        }
+        let active = UIColor(rgb: 0x34D87B)
+        for item in [tabBar.stackedLayoutAppearance, tabBar.inlineLayoutAppearance, tabBar.compactInlineLayoutAppearance] {
+            item.normal.iconColor = inactive
+            item.normal.titleTextAttributes = [.foregroundColor: inactive]
+            item.selected.iconColor = active
+            item.selected.titleTextAttributes = [.foregroundColor: active]
+        }
+        UITabBar.appearance().standardAppearance = tabBar
+        UITabBar.appearance().scrollEdgeAppearance = tabBar
 
-    static func field(for colorScheme: ColorScheme) -> Color {
-        colorScheme == .dark
-            ? Color(red: 0.08, green: 0.08, blue: 0.08)
-            : Color(red: 0.96, green: 0.97, blue: 0.96)
+        UISegmentedControl.appearance().selectedSegmentTintColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(rgb: 0x39433D) : UIColor.white
+        }
+        UISegmentedControl.appearance().setTitleTextAttributes(
+            [.foregroundColor: UIColor { trait in
+                trait.userInterfaceStyle == .dark ? UIColor(rgb: 0xF2F5F3) : UIColor(rgb: 0x131715)
+            }],
+            for: .selected
+        )
+        UISegmentedControl.appearance().setTitleTextAttributes(
+            [.foregroundColor: UIColor { trait in
+                trait.userInterfaceStyle == .dark ? UIColor(rgb: 0x94A29B) : UIColor(rgb: 0x5C6862)
+            }],
+            for: .normal
+        )
     }
+}
 
-    static func border(for colorScheme: ColorScheme) -> Color {
-        colorScheme == .dark
-            ? Color.white.opacity(0.12)
-            : Color.black.opacity(0.08)
+private extension UIColor {
+    convenience init(rgb: UInt32) {
+        self.init(
+            red: CGFloat((rgb >> 16) & 0xFF) / 255.0,
+            green: CGFloat((rgb >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(rgb & 0xFF) / 255.0,
+            alpha: 1
+        )
+    }
+}
+
+// Uppercased tertiary section label shown *outside* cards (AfSectionLabel).
+struct SectionLabel: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text.uppercased())
+            .font(.caption.weight(.semibold))
+            .tracking(0.9)
+            .foregroundStyle(FinTheme.textTertiary)
     }
 }
 
@@ -175,11 +267,11 @@ struct GlassPanel<Content: View>: View {
         content
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(FinTheme.panel(for: colorScheme))
+            .background(FinTheme.card)
             .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(FinTheme.border(for: colorScheme), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(FinTheme.line, lineWidth: 1)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
