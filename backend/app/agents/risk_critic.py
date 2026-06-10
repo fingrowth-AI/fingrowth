@@ -18,7 +18,7 @@ import math
 import re
 from typing import Any
 
-from app.models.analysis import AnalysisReport, TechnicalIndicators
+from app.models.analysis import AnalysisReport
 from app.models.risk import (
     STANDARD_DISCLAIMER,
     RiskFlag,
@@ -174,14 +174,20 @@ def _make_flags(code: RiskFlagCode, hits: list[str]) -> list[RiskFlag]:
     return [RiskFlag(code=code, detail=hit) for hit in hits]
 
 
-def _allowed_numeric_values(indicators: TechnicalIndicators) -> list[float]:
+def _allowed_numeric_values(report: AnalysisReport) -> list[float]:
     """Numbers the narrative may quote without triggering a hallucination flag.
 
-    Mirrors the fields the Analyst emits in :class:`TechnicalIndicators`. If
-    a new computed value is added there, mirror it here so the critic can
-    recognise legitimate references to it.
+    Mirrors the deterministic values the Analyst emits: the
+    :class:`TechnicalIndicators` fields plus, on the fundamental route, the
+    report's :class:`FundamentalsSnapshot` (which admits its own scaled display
+    forms — "$26.04 billion" — via ``allowed_numbers``). If a new computed
+    value is added there, mirror it here so the critic can recognise
+    legitimate references to it.
     """
+    indicators = report.technical_indicators
     vals: list[float] = []
+    if report.fundamentals is not None:
+        vals.extend(report.fundamentals.allowed_numbers())
     if indicators.rsi is not None:
         vals.append(indicators.rsi)
     if indicators.macd is not None:
@@ -208,14 +214,17 @@ def _allowed_numeric_values(indicators: TechnicalIndicators) -> list[float]:
 
 
 def _is_supported(value: float, allowed: list[float]) -> bool:
+    # Compare magnitudes: the token pattern can't capture a leading minus sign,
+    # so "signal -0.4402" surfaces as 0.4402 — still a legitimate reference to
+    # the computed (negative) value.
     return any(
-        math.isclose(value, a, abs_tol=_NUMERIC_TOLERANCE, rel_tol=0.0)
+        math.isclose(abs(value), abs(a), abs_tol=_NUMERIC_TOLERANCE, rel_tol=0.0)
         for a in allowed
     )
 
 
 def _detect_unsupported_numerics(
-    narrative: str, indicators: TechnicalIndicators
+    narrative: str, report: AnalysisReport
 ) -> list[str]:
     """Return narrative tokens that look like prices/indicators but match nothing computed.
 
@@ -226,7 +235,7 @@ def _detect_unsupported_numerics(
     """
     if not narrative:
         return []
-    allowed = _allowed_numeric_values(indicators)
+    allowed = _allowed_numeric_values(report)
     unsupported: list[str] = []
     for m in _NUMERIC_TOKEN_PATTERN.finditer(narrative):
         raw = m.group("dollar") or m.group("decimal")
@@ -275,7 +284,7 @@ def critique(report: AnalysisReport) -> RiskReview:
     flags.extend(
         _make_flags(
             "unsupported_numeric_claim",
-            _detect_unsupported_numerics(narrative, report.technical_indicators),
+            _detect_unsupported_numerics(narrative, report),
         )
     )
 

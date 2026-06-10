@@ -80,9 +80,16 @@ def _stub_researcher_and_llm(monkeypatch):
     async def _prices(*args, **kwargs):
         return [PriceBar.model_validate(b) for b in _price_payload(60)]
 
+    async def _none(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("app.agents.researcher.get_company_filings", _empty_filings)
     monkeypatch.setattr("app.agents.researcher.get_daily_prices", _prices)
     monkeypatch.setattr("app.agents.researcher.get_company_news", _empty_news)
+    # Fundamental-route extras (XBRL facts + overview) stay offline too.
+    monkeypatch.setattr("app.agents.researcher.ticker_to_cik", _none)
+    monkeypatch.setattr("app.agents.researcher.get_financial_statements", _none)
+    monkeypatch.setattr("app.agents.researcher.get_company_overview", _none)
     monkeypatch.setattr(analyst_module.settings, "openai_api_key", "")
 
 
@@ -297,6 +304,31 @@ async def test_session_id_is_generated_when_omitted(client: AsyncClient):
 # ---------------------------------------------------------------------------
 # Acceptance: portfolio_profile influences the narrative
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_earnings_question_is_answered_fundamentally_end_to_end(
+    client: AsyncClient,
+):
+    """The reported bug, end to end: an earnings question must not come back
+    as a technical momentum read — even when the client sent analysis_type
+    'technical' (stale auto-detect). The Router reclassifies from the query,
+    the Analyst leads with the earnings answer (here: the honest unavailable
+    message, since this offline fixture stubs the fundamentals fetches), and
+    Trend/Range chunks don't headline the result."""
+    _s, _ct, events = await _collect_events(
+        client,
+        {
+            "query": "How were AAPL's latest earnings?",
+            "ticker": "AAPL",
+            "analysis_type": "technical",
+        },
+    )
+    analysis = next(e for e in events if e["event"] == "final_result")["data"]["analysis"]
+    assert "financials unavailable" in analysis["verdict"].lower()
+    assert "couldn't retrieve" in analysis["narrative"].lower()
+    labels = [s["label"] for s in analysis["interpretation"]]
+    assert "Trend" not in labels and "Range" not in labels
 
 
 @pytest.mark.asyncio
@@ -531,7 +563,10 @@ async def test_rejected_narrative_replaced_by_safe_default_in_final_result(
     default rather than passed through unchanged.
     """
 
-    def _violating_narrate(ticker, indicators, packet, portfolio_profile=None, prior_analyses=None):
+    def _violating_narrate(
+        ticker, indicators, packet,
+        portfolio_profile=None, prior_analyses=None, analysis_type="technical",
+    ):
         # Triggers buy_sell_recommendation + future_price_claim flags, which
         # are both rejection codes.
         return (

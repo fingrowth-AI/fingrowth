@@ -32,6 +32,14 @@ final class AnalysisTypeClassifierTests: XCTestCase {
         XCTAssertEqual(classify("Break down Microsoft's balance sheet and margins"), .fundamental)
     }
 
+    func testEarningsPhrasingsClassifyFundamental() {
+        // The bug report's exact phrasing, plus common variants.
+        XCTAssertEqual(classify("How were NVDA's latest earnings?"), .fundamental)
+        XCTAssertEqual(classify("What happened in the latest quarter?"), .fundamental)
+        XCTAssertEqual(classify("How did quarterly results compare to guidance?"), .fundamental)
+        XCTAssertEqual(classify("Did net income improve with the new outlook?"), .fundamental)
+    }
+
     func testGeneralQueries() {
         XCTAssertEqual(classify("What's the latest news on NVDA?"), .general)
         XCTAssertEqual(classify("Tell me about Tesla"), .general)

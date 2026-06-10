@@ -801,6 +801,67 @@ def test_equity_series_respects_custom_starting_cash_and_sorts_dates():
     assert all(p.equity == pytest.approx(5_000.0) for p in series)
 
 
+def test_equity_series_marks_open_position_to_close():
+    """An unclosed position moves the curve with its daily closes — the curve
+    must not sit at the seed until the first sell."""
+    orders = _orders(("buy", 10, 100, 1))
+    dates = [date(2024, 1, d) for d in (1, 2, 3)]
+    closes = {"AAPL": {
+        date(2024, 1, 1): 100.0, date(2024, 1, 2): 110.0, date(2024, 1, 3): 105.0,
+    }}
+    eq = {p.date: p.equity for p in
+          reconstruct_equity_series(orders, dates, SEED_EQUITY, closes=closes)}
+    assert eq["2024-01-01"] == pytest.approx(SEED_EQUITY)         # close == cost
+    assert eq["2024-01-02"] == pytest.approx(SEED_EQUITY + 100)   # 10 × (110−100)
+    assert eq["2024-01-03"] == pytest.approx(SEED_EQUITY + 50)    # 10 × (105−100)
+
+
+def test_equity_series_forward_fills_missing_close_days():
+    """A day with no close for the symbol uses the most recent prior close."""
+    orders = _orders(("buy", 10, 100, 1))
+    dates = [date(2024, 1, d) for d in (1, 2, 3)]
+    closes = {"AAPL": {date(2024, 1, 1): 120.0}}  # nothing for the 2nd/3rd
+    series = reconstruct_equity_series(orders, dates, SEED_EQUITY, closes=closes)
+    assert [p.equity for p in series] == [pytest.approx(SEED_EQUITY + 200)] * 3
+
+
+def test_equity_series_values_symbol_without_closes_at_cost():
+    """No closes for a held symbol → cost valuation (the realized-only floor)."""
+    orders = _orders(("buy", 10, 100, 1))
+    dates = [date(2024, 1, 1), date(2024, 1, 2)]
+    series = reconstruct_equity_series(
+        orders, dates, SEED_EQUITY, closes={"MSFT": {date(2024, 1, 1): 9.0}}
+    )
+    assert all(p.equity == pytest.approx(SEED_EQUITY) for p in series)
+
+
+def test_equity_series_marks_short_positions():
+    """Signed-quantity mark: a short gains when the close falls below basis."""
+    orders = _orders(("sell", 10, 100, 1))
+    dates = [date(2024, 1, 1), date(2024, 1, 2)]
+    closes = {"AAPL": {date(2024, 1, 1): 100.0, date(2024, 1, 2): 90.0}}
+    eq = {p.date: p.equity for p in
+          reconstruct_equity_series(orders, dates, SEED_EQUITY, closes=closes)}
+    assert eq["2024-01-01"] == pytest.approx(SEED_EQUITY)
+    assert eq["2024-01-02"] == pytest.approx(SEED_EQUITY + 100)  # −10 × (90−100)
+
+
+def test_equity_series_combines_realized_and_marked_unrealized():
+    """Partial close: realized P/L and the remaining position's mark both count."""
+    # Buy 10 @100; sell 5 @120 on day 2 (realized +100); close 130 on day 3.
+    orders = _orders(("buy", 10, 100, 1), ("sell", 5, 120, 2))
+    dates = [date(2024, 1, d) for d in (1, 2, 3)]
+    closes = {"AAPL": {
+        date(2024, 1, 1): 100.0, date(2024, 1, 2): 120.0, date(2024, 1, 3): 130.0,
+    }}
+    eq = {p.date: p.equity for p in
+          reconstruct_equity_series(orders, dates, SEED_EQUITY, closes=closes)}
+    # Day 2: +100 realized, remaining 5 marked at 120 → +100 unrealized.
+    assert eq["2024-01-02"] == pytest.approx(SEED_EQUITY + 200)
+    # Day 3: +100 realized, remaining 5 marked at 130 → +150 unrealized.
+    assert eq["2024-01-03"] == pytest.approx(SEED_EQUITY + 250)
+
+
 # ---------------------------------------------------------------------------
 # Sanity
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ Everything else becomes a 500 via FastAPI's default handler.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Literal
 
 import httpx
@@ -486,6 +487,11 @@ async def performance(
     and virtual cash — never Alpaca's account-level history), so the two overlay
     on one chart. Both are expressed as cumulative return from the window's
     first day, so closed trades stay in the curve and the scales line up.
+
+    Open positions are marked to each day's close so a portfolio of unclosed
+    trades moves with the market instead of reading 0% until the first sell.
+    A symbol whose closes can't be fetched (rate limit, quota, stale data)
+    degrades to cost valuation for that symbol — the endpoint still answers.
     """
     bars = await _fetch_benchmark_bars(symbol, days)
     if not bars:
@@ -504,8 +510,32 @@ async def performance(
         logger.exception("performance: user equity inputs failed")
         raise _map_client_error(exc) from exc
 
+    # Daily closes for every symbol the user's fills touch, to mark open
+    # positions to market. Billed to the user (cache misses count against their
+    # quota — these are user-specific tickers, unlike the shared benchmark);
+    # staleness is disabled because forward-fill valuation tolerates old closes.
+    traded = sorted({o.symbol for o in orders if (o.filled_qty or 0) > 0})
+    closes: dict[str, dict[date, float]] = {}
+    for ticker in traded:
+        try:
+            ticker_bars = await get_daily_prices(
+                ticker,
+                days=days,
+                ttl=_BENCHMARK_CACHE_TTL_SECONDS,
+                max_staleness_days=0,
+                user_id=current_user,
+            )
+        except Exception:
+            logger.warning(
+                "performance: closes unavailable for %s; valuing at cost", ticker
+            )
+            continue
+        closes[ticker] = {b.date: b.close for b in ticker_bars}
+
     dates = [b.date for b in bars]
-    equity_points = reconstruct_equity_series(orders, dates, starting_cash)
+    equity_points = reconstruct_equity_series(
+        orders, dates, starting_cash, closes=closes
+    )
 
     base_equity = equity_points[0].equity
     base_close = bars[0].close

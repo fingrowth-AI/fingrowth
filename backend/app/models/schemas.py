@@ -108,6 +108,10 @@ class AnalysisQuery(BaseModel):
     ticker: str = Field(..., min_length=1, max_length=10)
     # "fundamental" | "technical" | "general"
     analysis_type: str = Field(..., pattern=r"^(fundamental|technical|general)$")
+    # True when the user explicitly picked analysis_type (V12-04 override);
+    # False/omitted means it was auto-detected, so the server Router may
+    # reclassify from the query text.
+    type_overridden: bool = False
     session_id: uuid.UUID | None = None
     portfolio_profile: PortfolioProfile | None = None
 

@@ -24,9 +24,16 @@ def _stub_researcher_tools(monkeypatch):
     async def _empty(*args, **kwargs):
         return []
 
+    async def _none(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("app.agents.researcher.get_company_filings", _empty)
     monkeypatch.setattr("app.agents.researcher.get_daily_prices", _empty)
     monkeypatch.setattr("app.agents.researcher.get_company_news", _empty)
+    # The fundamental route additionally fetches XBRL facts + the overview.
+    monkeypatch.setattr("app.agents.researcher.ticker_to_cik", _none)
+    monkeypatch.setattr("app.agents.researcher.get_financial_statements", _none)
+    monkeypatch.setattr("app.agents.researcher.get_company_overview", _none)
 
 
 def _run(analysis_type: str | None) -> AgentState:
@@ -121,6 +128,63 @@ def test_missing_type_defaults_to_general_research():
     result = _run(None)
     assert result["route"] == "general_research"
     assert result["path"] == ["router", "researcher", "general", "risk_critic"]
+
+
+# ---------------------------------------------------------------------------
+# Router classifies the query text (the design doc's "Router classifies query
+# type") — the requested analysis_type is a hint unless the user overrode it.
+# ---------------------------------------------------------------------------
+
+
+def _run_query(query: str, analysis_type: str, **extra) -> AgentState:
+    state: AgentState = {
+        "query": query,
+        "ticker": "NVDA",
+        "analysis_type": analysis_type,
+        **extra,
+    }
+    return agent_graph.invoke(state)
+
+
+def test_earnings_question_routes_to_fundamental_despite_requested_type():
+    """The reported bug: an earnings question must not run as technical."""
+    for requested in ("technical", "general"):
+        result = _run_query("How were NVDA's latest earnings?", requested)
+        assert result["route"] == "fundamental_analysis", requested
+        assert "analyst" in result["path"]
+
+
+def test_quarter_and_revenue_phrasings_route_to_fundamental():
+    assert _run_query("What happened in the latest quarter?", "technical")[
+        "route"
+    ] == "fundamental_analysis"
+    assert _run_query("Is revenue still growing?", "general")[
+        "route"
+    ] == "fundamental_analysis"
+
+
+def test_technical_question_routes_to_technical_despite_requested_type():
+    result = _run_query("Is the RSI overbought right now?", "general")
+    assert result["route"] == "technical_analysis"
+
+
+def test_user_override_is_respected_over_query_text():
+    """An explicit user pick is never second-guessed by the Router."""
+    result = _run_query(
+        "How were NVDA's latest earnings?", "technical", type_overridden=True
+    )
+    assert result["route"] == "technical_analysis"
+
+
+def test_inconclusive_query_falls_back_to_requested_type():
+    result = _run_query("Tell me about this company", "technical")
+    assert result["route"] == "technical_analysis"
+
+
+def test_mixed_cue_tie_falls_back_to_requested_type():
+    # One fundamental cue ("earnings") + one technical cue ("rsi") → tie.
+    result = _run_query("Compare earnings with the RSI signal", "general")
+    assert result["route"] == "general_research"
 
 
 # ---------------------------------------------------------------------------

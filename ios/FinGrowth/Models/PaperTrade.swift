@@ -36,8 +36,9 @@ struct BrokerPosition: Codable, Sendable, Equatable, Identifiable, Hashable {
 // user's own trade log and virtual cash — never Alpaca's account-level
 // history — and samples it on the benchmark's trading days, so the two series
 // overlay on one chart. Returns are cumulative fractions vs. the window's
-// first day (0.05 == +5%); realized P/L is carried forward, so closed trades
-// stay in the curve.
+// first day (0.05 == +5%); realized P/L is carried forward (closed trades stay
+// in the curve) and open positions are marked to each day's close, so the
+// curve moves before the first sell.
 struct PerformancePoint: Codable, Sendable, Equatable, Hashable {
     var date: String  // yyyy-mm-dd
     var equity: Double

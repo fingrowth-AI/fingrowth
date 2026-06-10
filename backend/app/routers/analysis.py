@@ -316,6 +316,7 @@ async def _run_pipeline(
         "query": body.query,
         "ticker": ticker,
         "analysis_type": body.analysis_type,
+        "type_overridden": body.type_overridden,
         "portfolio_profile": (
             body.portfolio_profile.model_dump()
             if body.portfolio_profile is not None

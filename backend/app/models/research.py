@@ -13,6 +13,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.models.fundamentals import FundamentalsSnapshot
 from app.models.market import PriceBar
 from app.models.news import NewsItem
 from app.models.sec import Filing
@@ -43,6 +44,9 @@ class ResearchPacket(BaseModel):
     filings: list[Filing] = Field(default_factory=list)
     news: list[NewsItem] = Field(default_factory=list)
     price_data: list[PriceBar] = Field(default_factory=list)
+    # Latest-quarter earnings + valuation context. Populated only on the
+    # fundamental-analysis route; None elsewhere and when both fetches failed.
+    fundamentals: FundamentalsSnapshot | None = None
     sources: list[Source] = Field(default_factory=list)
 
     @property

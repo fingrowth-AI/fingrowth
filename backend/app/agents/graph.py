@@ -14,6 +14,7 @@ stubs here — they are fleshed out in P3-02, P3-03 and P3-04 respectively.
 
 from __future__ import annotations
 
+import re
 from operator import add
 from typing import Annotated, Any, TypedDict
 
@@ -35,6 +36,60 @@ DEFAULT_ROUTE = "general_research"
 # Routes that require deterministic technical analysis (the Analyst node).
 _ANALYST_ROUTES = ("fundamental_analysis", "technical_analysis")
 
+# ---------------------------------------------------------------------------
+# Query-text classification (the design doc's "Router classifies query type")
+#
+# The request's analysis_type is a *hint*: the iOS picker may carry a stale
+# auto-detection or a default, and other clients may not classify at all. The
+# Router therefore classifies the query text itself with the same deterministic
+# cue vocabulary as the on-device V12-04 classifier, and only falls back to the
+# requested type when the text is inconclusive. An explicit user override
+# (type_overridden=True) always wins — the user's choice is never second-guessed.
+# ---------------------------------------------------------------------------
+
+_FUNDAMENTAL_CUES = (
+    "earnings", "revenue", "eps", "quarter", "quarterly", "guidance",
+    "valuation", "p/e", "pe ratio", "profit", "profits", "margin", "margins",
+    "dividend", "balance sheet", "cash flow", "10-k", "10-q", "filing",
+    "filings", "income statement", "net income", "book value", "fundamental",
+    "fundamentals", "financials", "moat", "sales", "growth",
+)
+_TECHNICAL_CUES = (
+    "rsi", "macd", "bollinger", "moving average", "sma", "ema", "overbought",
+    "oversold", "momentum", "support", "resistance", "trend", "trending",
+    "breakout", "technical", "chart", "charts", "candlestick", "death cross",
+    "golden cross", "50-day", "200-day", "price action", "volume",
+)
+
+
+def _cue_patterns(cues: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    # Word-bounded so short cues ("eps", "sma") don't match inside other words.
+    return tuple(
+        re.compile(rf"\b{re.escape(cue)}\b", re.IGNORECASE) for cue in cues
+    )
+
+
+_FUNDAMENTAL_PATTERNS = _cue_patterns(_FUNDAMENTAL_CUES)
+_TECHNICAL_PATTERNS = _cue_patterns(_TECHNICAL_CUES)
+
+
+def classify_query_route(query: str) -> str | None:
+    """Deterministic route from the query text; None when inconclusive.
+
+    Counts *distinct* cue hits per side; the side with more wins, a tie (or no
+    cues at all) is inconclusive. Mirrors the iOS V12-04 classifier so device
+    and server agree on the common cases.
+    """
+    if not query:
+        return None
+    fundamental = sum(1 for p in _FUNDAMENTAL_PATTERNS if p.search(query))
+    technical = sum(1 for p in _TECHNICAL_PATTERNS if p.search(query))
+    if fundamental > technical:
+        return "fundamental_analysis"
+    if technical > fundamental:
+        return "technical_analysis"
+    return None
+
 
 class AgentState(TypedDict, total=False):
     """Typed state threaded through the agent graph.
@@ -47,6 +102,9 @@ class AgentState(TypedDict, total=False):
     query: str
     ticker: str
     analysis_type: str
+    # True when the user explicitly picked the analysis type in the client
+    # (V12-04 override); the Router then never reclassifies from the query text.
+    type_overridden: bool
     portfolio_profile: dict[str, Any] | None
     # V12-06: the user's recalled prior analyses (PII-free narrative summaries),
     # declared so LangGraph threads them to the Analyst — undeclared keys are
@@ -68,9 +126,18 @@ class AgentState(TypedDict, total=False):
 
 
 def router_node(state: AgentState) -> dict[str, Any]:
-    """Classify the query and select one of three routing paths."""
+    """Classify the query and select one of three routing paths.
+
+    Priority: an explicit user override > the query text's own signal > the
+    requested analysis_type > the general default. This is what makes an
+    earnings question route to fundamental analysis even when the client sent
+    a stale or defaulted type.
+    """
     analysis_type = (state.get("analysis_type") or "").strip().lower()
-    route = _ROUTE_MAP.get(analysis_type, DEFAULT_ROUTE)
+    requested = _ROUTE_MAP.get(analysis_type, DEFAULT_ROUTE)
+    if state.get("type_overridden"):
+        return {"route": requested, "path": ["router"]}
+    route = classify_query_route(state.get("query", "")) or requested
     return {"route": route, "path": ["router"]}
 
 

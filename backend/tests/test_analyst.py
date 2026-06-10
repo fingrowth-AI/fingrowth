@@ -184,7 +184,10 @@ def test_llm_narrator_is_called_with_indicators(monkeypatch):
     """When narrate() is monkeypatched, its return wins — i.e. the seam exists."""
     captured: dict[str, object] = {}
 
-    def fake_narrate(ticker, indicators, packet, portfolio_profile=None, prior_analyses=None):
+    def fake_narrate(
+        ticker, indicators, packet,
+        portfolio_profile=None, prior_analyses=None, analysis_type="technical",
+    ):
         captured["ticker"] = ticker
         captured["rsi"] = indicators.rsi
         return "FAKE NARRATIVE"
@@ -556,3 +559,94 @@ def test_analyst_node_handles_missing_research_gracefully():
     assert report.confidence_level == "insufficient_data"
     assert report.technical_indicators.sample_size == 0
     assert report.notes  # explanatory note attached
+
+
+# ---------------------------------------------------------------------------
+# Fundamental route: the report leads with the earnings answer
+# ---------------------------------------------------------------------------
+
+
+def _fundamentals():
+    from app.models.fundamentals import FundamentalsSnapshot
+
+    return FundamentalsSnapshot(
+        period_end=date(2025, 4, 27),
+        revenue=26_044_000_000,
+        revenue_yoy_pct=43.7,
+        net_income=18_775_000_000,
+        net_income_yoy_pct=26.2,
+        eps_diluted=0.76,
+        pe_ratio=55.5,
+        market_cap=3_210_000_000_000,
+    )
+
+
+def _fundamental_packet(closes: list[float], *, ticker: str = "NVDA") -> ResearchPacket:
+    packet = _packet(closes, ticker=ticker)
+    return packet.model_copy(update={
+        "query": "How were NVDA's latest earnings?",
+        "fundamentals": _fundamentals(),
+    })
+
+
+def test_fundamental_route_leads_with_earnings_answer():
+    """The narrative answers the earnings question first; technicals follow."""
+    report = analyze(_fundamental_packet(_sine_closes(60)), analysis_type="fundamental")
+
+    narrative = report.narrative
+    # Leads with the reported quarter, not the technical template.
+    assert narrative.index("quarter ended") < narrative.index("Technical read")
+    assert "$26.04 billion" in narrative
+    assert "up 43.7% year over year" in narrative
+    assert "$18.77 billion" in narrative
+    assert "diluted EPS of $0.76" in narrative
+
+
+def test_fundamental_verdict_reflects_the_quarter_not_momentum():
+    report = analyze(_fundamental_packet(_sine_closes(60)), analysis_type="fundamental")
+    assert "quarter" in report.verdict.lower()
+    assert "revenue grew" in report.verdict.lower()
+    assert len(report.verdict.split()) <= 15
+    # Number-free: the narrative carries the figures.
+    assert not any(ch.isdigit() for ch in report.verdict)
+
+
+def test_fundamental_interpretation_has_earnings_and_valuation_chunks():
+    report = analyze(_fundamental_packet(_sine_closes(60)), analysis_type="fundamental")
+    labels = [s.label for s in report.interpretation]
+    assert labels[0] == "Earnings"
+    assert "Valuation" in labels
+    assert "Momentum" in labels  # supporting context, after the answer
+    assert "Trend" not in labels and "Range" not in labels
+
+
+def test_fundamental_route_degrades_when_fundamentals_missing():
+    """No fundamentals fetched → say so, then fall back to general context."""
+    packet = _packet(_sine_closes(60), ticker="NVDA")
+    report = analyze(packet, analysis_type="fundamental")
+    assert "couldn't retrieve" in report.narrative.lower()
+    assert "unavailable" in report.verdict.lower()
+
+
+def test_fundamental_report_carries_fundamentals_for_the_critic():
+    report = analyze(_fundamental_packet(_sine_closes(60)), analysis_type="fundamental")
+    assert report.fundamentals is not None
+    assert report.fundamentals.revenue == pytest.approx(26_044_000_000)
+
+
+def test_technical_route_behavior_is_unchanged():
+    report = analyze(_packet(_sine_closes(60)))
+    assert report.narrative.startswith("Technical read for AAPL")
+    assert report.fundamentals is None
+    labels = [s.label for s in report.interpretation]
+    assert "Momentum" in labels and "Earnings" not in labels
+
+
+def test_fundamental_fallback_passes_risk_critic():
+    """The earnings fallback's figures are recognized as legitimate (advisory-clean)."""
+    from app.agents.risk_critic import critique
+
+    report = analyze(_fundamental_packet(_sine_closes(60)), analysis_type="fundamental")
+    review = critique(report)
+    assert review.approved is True
+    assert not any(f.code == "unsupported_numeric_claim" for f in review.flags)

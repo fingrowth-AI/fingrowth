@@ -1366,7 +1366,11 @@ struct ResearchView: View {
             let request = AnalysisQuery(
                 query: rewritten.rewrittenText,
                 ticker: tickerSymbol,
-                analysisType: type
+                analysisType: type,
+                // V12-04: tell the backend whether this type was the user's
+                // explicit pick (respected) or auto-detected (server may
+                // re-derive from the query text).
+                typeOverridden: analysisTypeUserOverridden
             )
             // Pin the submitted question to this result as the stream begins
             // (start() clears the prior finalResult), so the lead assessment is

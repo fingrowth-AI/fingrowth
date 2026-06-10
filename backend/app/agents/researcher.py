@@ -20,14 +20,23 @@ from typing import Any
 
 import httpx
 
+from app.models.fundamentals import FundamentalsSnapshot
 from app.models.research import ResearchPacket, Source
+from app.models.sec import FinancialData
+from app.tools.fundamentals import extract_fundamentals
 from app.tools.market_data import (
     ALPHA_VANTAGE_BASE,
     daily_prices_fetched_at,
+    get_company_overview,
     get_daily_prices,
 )
 from app.tools.news_sentiment import FINNHUB_BASE, get_company_news
-from app.tools.sec_edgar import WWW_BASE, get_company_filings
+from app.tools.sec_edgar import (
+    WWW_BASE,
+    get_company_filings,
+    get_financial_statements,
+    ticker_to_cik,
+)
 
 # Periodic reports drive fundamental research; ignore 8-Ks, proxies, etc.
 _FILING_FORMS = ("10-K", "10-Q")
@@ -68,6 +77,17 @@ def _news_url(ticker: str) -> str:
     return f"{FINNHUB_BASE}/company-news?symbol={ticker}"
 
 
+def _xbrl_url(ticker: str) -> str:
+    return (
+        f"{WWW_BASE}/cgi-bin/browse-edgar?action=getcompany"
+        f"&ticker={ticker}&type=10-Q&dateb=&owner=include&count=10"
+    )
+
+
+def _overview_url(ticker: str) -> str:
+    return f"{ALPHA_VANTAGE_BASE}?function=OVERVIEW&symbol={ticker}"
+
+
 def _resolve(
     result: list[Any] | BaseException,
     *,
@@ -98,22 +118,37 @@ def _resolve(
     )
 
 
+async def _fetch_quarterly_financials(
+    symbol: str, *, client: httpx.AsyncClient
+) -> FinancialData:
+    """Latest 10-Q XBRL facts for ``symbol`` (resolves the CIK first)."""
+    cik = await ticker_to_cik(symbol, client=client)
+    return await get_financial_statements(cik, "10-Q", client=client)
+
+
 async def gather_research(
     query: str,
     ticker: str,
     *,
     user_id: object | None = None,
+    include_fundamentals: bool = False,
     client: httpx.AsyncClient | None = None,
 ) -> ResearchPacket:
     """Gather filings, prices and news for ``ticker`` into a ResearchPacket.
 
-    The three data tools are fetched concurrently. ``return_exceptions=True``
+    The data tools are fetched concurrently. ``return_exceptions=True``
     means one failing source never aborts the others — failures surface as
     ``ok=False`` entries in :attr:`ResearchPacket.sources`. That seam is also
     how a V8-05 quota exhaustion degrades: the price source comes back
     ``ok=False`` with a clear message rather than crashing the pipeline.
 
-    ``user_id`` bills the (uncached) Alpha Vantage price fetch against that
+    ``include_fundamentals`` (the fundamental-analysis route) additionally
+    fetches the latest 10-Q XBRL facts and the company overview, distilled
+    deterministically into :attr:`ResearchPacket.fundamentals` so an earnings
+    question can be answered with earnings data. Same degradation contract:
+    either source failing yields a partial (or absent) snapshot, never a crash.
+
+    ``user_id`` bills the (uncached) Alpha Vantage fetches against that
     user's daily allocation (V8-05). SEC EDGAR and Finnhub are separate keys and
     are not metered here.
     """
@@ -122,14 +157,20 @@ async def gather_research(
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=_TIMEOUT)
     try:
-        filings_res, prices_res, news_res = await asyncio.gather(
+        tasks = [
             get_company_filings(
                 symbol, forms=_FILING_FORMS, limit=_FILING_LIMIT, client=client
             ),
             get_daily_prices(symbol, days=_PRICE_DAYS, user_id=user_id, client=client),
             get_company_news(symbol, days_back=_NEWS_DAYS_BACK, client=client),
-            return_exceptions=True,
-        )
+        ]
+        if include_fundamentals:
+            tasks.append(_fetch_quarterly_financials(symbol, client=client))
+            tasks.append(get_company_overview(symbol, user_id=user_id, client=client))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        filings_res, prices_res, news_res = results[:3]
+        financials_res = results[3] if include_fundamentals else None
+        overview_res = results[4] if include_fundamentals else None
     finally:
         if own_client:
             await client.aclose()
@@ -152,14 +193,64 @@ async def gather_research(
         news_res, name="Finnhub", url=_news_url(symbol), retrieved_at=retrieved_at
     )
 
+    sources = [sec_source, av_source, fh_source]
+    fundamentals: FundamentalsSnapshot | None = None
+    if include_fundamentals:
+        financials, xbrl_source = _resolve_one(
+            financials_res,
+            name="SEC EDGAR XBRL",
+            url=_xbrl_url(symbol),
+            retrieved_at=retrieved_at,
+        )
+        overview, overview_source = _resolve_one(
+            overview_res,
+            name="Alpha Vantage Overview",
+            url=_overview_url(symbol),
+            retrieved_at=retrieved_at,
+        )
+        sources.extend([xbrl_source, overview_source])
+        fundamentals = extract_fundamentals(financials, overview)
+
     return ResearchPacket(
         ticker=symbol,
         query=query,
         filings=filings,
         price_data=prices,
         news=news,
-        sources=[sec_source, av_source, fh_source],
+        fundamentals=fundamentals,
+        sources=sources,
     )
+
+
+def _resolve_one(
+    result: Any,
+    *,
+    name: str,
+    url: str,
+    retrieved_at: datetime,
+) -> tuple[Any, Source]:
+    """Like :func:`_resolve` but for single-object fetches (not lists).
+
+    A raised exception (or an explicit ``None`` payload, e.g. an unknown ticker
+    on the overview endpoint) becomes ``ok=False``.
+    """
+    if isinstance(result, BaseException):
+        return None, Source(
+            name=name,
+            url=url,
+            retrieved_at=retrieved_at,
+            ok=False,
+            error=f"{type(result).__name__}: {result}",
+        )
+    if result is None:
+        return None, Source(
+            name=name,
+            url=url,
+            retrieved_at=retrieved_at,
+            ok=False,
+            error="no data returned",
+        )
+    return result, Source(name=name, url=url, retrieved_at=retrieved_at, ok=True)
 
 
 def researcher_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -175,5 +266,12 @@ def researcher_node(state: dict[str, Any]) -> dict[str, Any]:
     # user_id is carried in the graph state (set by the analysis router) so the
     # uncached price fetch is metered against the requesting user (V8-05).
     user_id = state.get("user_id")
-    packet = asyncio.run(gather_research(query, ticker, user_id=user_id))
+    # The fundamental route additionally needs earnings/valuation data — that's
+    # what makes "how were earnings" answerable with earnings figures.
+    include_fundamentals = state.get("route") == "fundamental_analysis"
+    packet = asyncio.run(
+        gather_research(
+            query, ticker, user_id=user_id, include_fundamentals=include_fundamentals
+        )
+    )
     return {"path": ["researcher"], "research": packet.model_dump(mode="json")}

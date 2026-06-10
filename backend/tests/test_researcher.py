@@ -307,7 +307,9 @@ def test_researcher_node_threads_user_id_from_state(monkeypatch):
     """The graph node passes state['user_id'] into the metered price fetch."""
     captured: dict = {}
 
-    async def fake_gather(query, ticker, *, user_id=None, client=None):
+    async def fake_gather(
+        query, ticker, *, user_id=None, include_fundamentals=False, client=None
+    ):
         captured["user_id"] = user_id
         return ResearchPacket(
             ticker=ticker, query=query, filings=[], price_data=[], news=[], sources=[]
@@ -318,3 +320,143 @@ def test_researcher_node_threads_user_id_from_state(monkeypatch):
     researcher_node({"query": "q", "ticker": "AAPL", "user_id": "user-42"})
 
     assert captured["user_id"] == "user-42"
+
+
+# ---------------------------------------------------------------------------
+# Fundamental route: include_fundamentals fetches XBRL facts + the overview
+# ---------------------------------------------------------------------------
+
+
+def _stub_fundamental_tools(monkeypatch, *, cik="0000320193", financials=None, overview=None):
+    """Patch the fundamental-route tools; an Exception value is raised."""
+
+    def _make(value):
+        async def _tool(*args, **kwargs):
+            if isinstance(value, BaseException):
+                raise value
+            return value
+
+        return _tool
+
+    monkeypatch.setattr(researcher, "ticker_to_cik", _make(cik))
+    monkeypatch.setattr(researcher, "get_financial_statements", _make(financials))
+    monkeypatch.setattr(researcher, "get_company_overview", _make(overview))
+
+
+def _quarterly_financials():
+    from app.models.sec import FinancialData, FinancialFact
+
+    def fact(value, end, days=91):
+        return FinancialFact(
+            concept="us-gaap:Revenues",
+            label=None,
+            unit="USD",
+            value=value,
+            period_start=date.fromordinal(end.toordinal() - days),
+            period_end=end,
+            form="10-Q",
+            accession_number=None,
+        )
+
+    return FinancialData(
+        cik="0000320193",
+        entity_name="Apple Inc.",
+        form_type="10-Q",
+        facts=[fact(90e9, date(2024, 9, 28)), fact(95e9, date(2025, 9, 27))],
+    )
+
+
+def _company_overview():
+    from app.models.market import CompanyOverview
+
+    return CompanyOverview.model_validate(
+        {"Symbol": "AAPL", "PERatio": "33.1", "MarketCapitalization": "3400000000000"}
+    )
+
+
+async def test_fundamentals_fetched_on_fundamental_route(monkeypatch):
+    _stub_tools(monkeypatch, prices=_prices(5))
+    _stub_fundamental_tools(
+        monkeypatch, financials=_quarterly_financials(), overview=_company_overview()
+    )
+
+    packet = await gather_research("How were earnings?", "AAPL", include_fundamentals=True)
+
+    assert packet.fundamentals is not None
+    assert packet.fundamentals.revenue == 95e9
+    assert packet.fundamentals.revenue_yoy_pct == 5.6
+    assert packet.fundamentals.pe_ratio == 33.1
+    # Both new sources are attributed.
+    names = {s.name for s in packet.sources}
+    assert "SEC EDGAR XBRL" in names
+    assert "Alpha Vantage Overview" in names
+    assert not packet.degraded
+
+
+async def test_fundamentals_not_fetched_by_default(monkeypatch):
+    """Technical/general routes don't pay for fundamentals they won't use."""
+    called = {"any": False}
+
+    async def _must_not_run(*args, **kwargs):
+        called["any"] = True
+        raise AssertionError("fundamentals tool called without include_fundamentals")
+
+    _stub_tools(monkeypatch, prices=_prices(5))
+    monkeypatch.setattr(researcher, "ticker_to_cik", _must_not_run)
+    monkeypatch.setattr(researcher, "get_company_overview", _must_not_run)
+
+    packet = await gather_research("q", "AAPL")
+
+    assert packet.fundamentals is None
+    assert not called["any"]
+    assert len(packet.sources) == 3
+
+
+async def test_fundamentals_degrade_gracefully_when_xbrl_fails(monkeypatch):
+    """A failed XBRL fetch yields a failed source + overview-only snapshot."""
+    _stub_tools(monkeypatch, prices=_prices(5))
+    _stub_fundamental_tools(
+        monkeypatch, financials=RuntimeError("EDGAR down"), overview=_company_overview()
+    )
+
+    packet = await gather_research("How were earnings?", "AAPL", include_fundamentals=True)
+
+    xbrl = next(s for s in packet.sources if s.name == "SEC EDGAR XBRL")
+    assert not xbrl.ok and "EDGAR down" in (xbrl.error or "")
+    assert packet.degraded
+    # Overview still produced a partial snapshot.
+    assert packet.fundamentals is not None
+    assert packet.fundamentals.pe_ratio == 33.1
+    assert not packet.fundamentals.has_quarter
+
+
+async def test_fundamentals_none_when_both_sources_fail(monkeypatch):
+    _stub_tools(monkeypatch, prices=_prices(5))
+    _stub_fundamental_tools(
+        monkeypatch,
+        financials=RuntimeError("EDGAR down"),
+        overview=RuntimeError("AV down"),
+    )
+
+    packet = await gather_research("How were earnings?", "AAPL", include_fundamentals=True)
+
+    assert packet.fundamentals is None
+    assert packet.degraded
+
+
+def test_researcher_node_requests_fundamentals_on_fundamental_route(monkeypatch):
+    captured: dict = {}
+
+    async def fake_gather(
+        query, ticker, *, user_id=None, include_fundamentals=False, client=None
+    ):
+        captured["include_fundamentals"] = include_fundamentals
+        return ResearchPacket(ticker=ticker, query=query)
+
+    monkeypatch.setattr(researcher, "gather_research", fake_gather)
+
+    researcher_node({"query": "q", "ticker": "NVDA", "route": "fundamental_analysis"})
+    assert captured["include_fundamentals"] is True
+
+    researcher_node({"query": "q", "ticker": "NVDA", "route": "technical_analysis"})
+    assert captured["include_fundamentals"] is False

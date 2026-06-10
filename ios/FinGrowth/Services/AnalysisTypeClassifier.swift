@@ -65,7 +65,8 @@ struct AnalysisTypeClassifier: Sendable {
         "balance sheet", "cash flow", "fundamental", "fundamentals", "debt",
         "margin", "margins", "dividend", "eps", "book value", "10-k", "10-q",
         "filing", "filings", "income statement", "profit", "profits", "guidance",
-        "moat", "financials", "sales", "growth",
+        "moat", "financials", "sales", "growth", "quarter", "quarterly",
+        "net income", "outlook",
     ]
 
     private static let technicalPatterns = makePatterns(technicalCues)

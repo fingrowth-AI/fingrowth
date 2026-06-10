@@ -434,12 +434,16 @@ async def test_balance_returns_tracked_cash(monkeypatch, client: AsyncClient):
 # ---------------------------------------------------------------------------
 
 
-def _spy_bars():
+def _bars(ticker: str, *day_closes: tuple[int, float]) -> list[PriceBar]:
     return [
-        PriceBar(ticker="SPY", date=date(2024, 1, d), open=p, high=p, low=p,
+        PriceBar(ticker=ticker, date=date(2024, 1, d), open=p, high=p, low=p,
                  close=p, volume=1)
-        for d, p in [(1, 400.0), (2, 410.0), (3, 420.0)]
+        for d, p in day_closes
     ]
+
+
+def _spy_bars():
+    return _bars("SPY", (1, 400.0), (2, 410.0), (3, 420.0))
 
 
 @pytest.mark.asyncio
@@ -451,8 +455,12 @@ async def test_performance_overlays_user_curve_on_benchmark(
     captured: dict = {}
 
     async def fake_spy(symbol, days=30, **kwargs):
-        captured["symbol"] = symbol
-        return _spy_bars()
+        if symbol == "SPY":
+            captured["symbol"] = symbol
+            return _spy_bars()
+        # The held symbol's closes: day-1 close equals the fill price, so the
+        # open position carries no mark before it's sold on day 2.
+        return _bars(symbol, (1, 100.0), (2, 110.0), (3, 120.0))
 
     async def fake_cash(session, user_id):
         return 100000.0
@@ -495,6 +503,79 @@ async def test_performance_overlays_user_curve_on_benchmark(
     # Benchmark: 400 -> 410 -> 420 == 0, +2.5%, +5%.
     assert pts[1]["benchmark_return"] == pytest.approx(0.025)
     assert pts[2]["benchmark_return"] == pytest.approx(0.05)
+
+
+@pytest.mark.asyncio
+async def test_performance_marks_open_positions_to_market(
+    monkeypatch, client: AsyncClient
+):
+    """An unclosed position must move the curve with the market — a portfolio
+    of open trades previously read 0% until the first sell."""
+
+    async def fake_prices(symbol, days=30, **kwargs):
+        if symbol == "SPY":
+            return _spy_bars()
+        return _bars(symbol, (1, 100.0), (2, 110.0), (3, 120.0))
+
+    async def fake_cash(session, user_id):
+        return 100000.0
+
+    async def fake_orders(user_id, *, status="all", client=None):
+        # One open buy, never sold.
+        return [
+            _order(
+                side="buy", filled_qty=10.0, filled_avg_price=100.0,
+                submitted_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            ),
+        ]
+
+    monkeypatch.setattr(router_module, "get_daily_prices", fake_prices)
+    monkeypatch.setattr(router_module, "get_or_create_starting_cash", fake_cash)
+    monkeypatch.setattr(router_module, "get_user_orders", fake_orders)
+
+    resp = await client.get("/api/v1/paper/performance?days=3")
+
+    assert resp.status_code == 200
+    pts = resp.json()["points"]
+    # 10 shares bought @100: closes 100 / 110 / 120 → +0, +$100, +$200.
+    assert pts[0]["portfolio_return"] == pytest.approx(0.0)
+    assert pts[1]["portfolio_return"] == pytest.approx(0.001)
+    assert pts[2]["portfolio_return"] == pytest.approx(0.002)
+    assert pts[2]["equity"] == pytest.approx(100200.0)
+
+
+@pytest.mark.asyncio
+async def test_performance_falls_back_to_cost_when_symbol_prices_unavailable(
+    monkeypatch, client: AsyncClient
+):
+    """A rate-limited held symbol degrades to cost valuation (the realized-only
+    floor) instead of failing the endpoint."""
+
+    async def fake_prices(symbol, days=30, **kwargs):
+        if symbol == "SPY":
+            return _spy_bars()
+        raise RateLimitError("slow down")
+
+    async def fake_cash(session, user_id):
+        return 100000.0
+
+    async def fake_orders(user_id, *, status="all", client=None):
+        return [
+            _order(
+                side="buy", filled_qty=10.0, filled_avg_price=100.0,
+                submitted_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            ),
+        ]
+
+    monkeypatch.setattr(router_module, "get_daily_prices", fake_prices)
+    monkeypatch.setattr(router_module, "get_or_create_starting_cash", fake_cash)
+    monkeypatch.setattr(router_module, "get_user_orders", fake_orders)
+
+    resp = await client.get("/api/v1/paper/performance?days=3")
+
+    assert resp.status_code == 200
+    pts = resp.json()["points"]
+    assert [p["portfolio_return"] for p in pts] == [pytest.approx(0.0)] * 3
 
 
 @pytest.mark.asyncio

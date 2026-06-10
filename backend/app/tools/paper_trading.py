@@ -12,7 +12,9 @@ orders, OCO/OTO, and trailing-stop variants are left to a follow-up.
 
 from __future__ import annotations
 
+import bisect
 import uuid
+from collections.abc import Mapping
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
@@ -498,34 +500,40 @@ def reconstruct_equity_series(
     orders: list[Order],
     dates: list[date],
     starting_cash: float = SEED_EQUITY,
+    closes: Mapping[str, Mapping[date, float]] | None = None,
 ) -> list[PortfolioHistoryPoint]:
     """Sample a user's equity at each date in ``dates`` (V8-04).
 
-    Equity is ``starting_cash + cumulative realized P/L`` as of each date —
-    derived from the reconstructed trade log and virtual cash, never from live
-    marks or Alpaca's account-level history. Two consequences the acceptance
-    criteria call for:
+    Equity is ``starting_cash + cumulative realized P/L + unrealized P/L`` as of
+    each date — derived from the reconstructed trade log and virtual cash, never
+    from Alpaca's account-level history. Consequences the acceptance criteria
+    call for:
 
     * **Per-user**: ``orders`` are the caller's own (prefix-filtered) fills, so
       the curve reflects only their trades.
     * **Closed trades persist**: realized P/L is accumulated and carried
       forward, so a completed winning trade permanently lifts the curve instead
       of vanishing when its proceeds are spent.
+    * **Open trades move the curve**: positions still open are marked to the
+      day's close from ``closes`` (``symbol -> day -> close``, forward-filled to
+      the most recent close on or before each sampled day). A symbol with no
+      usable close — or ``closes=None`` — is valued at cost, so the curve
+      degrades to the realized-only floor rather than failing.
 
     Sampling on a supplied date list (rather than only trade days) lets the
     curve be overlaid on a benchmark series that shares those trading days —
     every date gets a point via forward-fill. Dates before the first fill read
     the untouched ``starting_cash``.
-
-    Realized-only by design: unrealized appreciation of still-open positions is
-    intentionally not marked here, keeping the series deterministic and
-    independent of intraday price availability.
     """
     filled = _filled_chronological(orders)
     state: dict[str, tuple[float, float]] = {}
     realized = 0.0
     i = 0
     points: list[PortfolioHistoryPoint] = []
+    # Pre-sorted close dates per symbol for the forward-fill lookups.
+    close_dates: dict[str, list[date]] = {
+        symbol: sorted(series) for symbol, series in (closes or {}).items()
+    }
     for day in sorted(dates):
         # Fold in every fill submitted on or before this day, once.
         while i < len(filled) and (filled[i].submitted_at or _EPOCH).date() <= day:
@@ -538,10 +546,34 @@ def reconstruct_equity_series(
             state[order.symbol] = (new_qty, new_avg)
             realized += pnl
             i += 1
+        # Mark open positions to the latest close on or before this day. Signed
+        # qty makes the same expression correct for shorts.
+        unrealized = 0.0
+        if closes:
+            for symbol, (qty, avg) in state.items():
+                if abs(qty) < 1e-9:
+                    continue
+                close = _close_on_or_before(
+                    close_dates.get(symbol, []), closes.get(symbol, {}), day
+                )
+                if close is not None:
+                    unrealized += qty * (close - avg)
         points.append(
-            PortfolioHistoryPoint(date=day.isoformat(), equity=starting_cash + realized)
+            PortfolioHistoryPoint(
+                date=day.isoformat(), equity=starting_cash + realized + unrealized
+            )
         )
     return points
+
+
+def _close_on_or_before(
+    sorted_days: list[date], series: Mapping[date, float], day: date
+) -> float | None:
+    """The most recent close at or before ``day``; None when none exists yet."""
+    index = bisect.bisect_right(sorted_days, day) - 1
+    if index < 0:
+        return None
+    return series[sorted_days[index]]
 
 
 # Alpaca accepts a fixed vocabulary for these; we validate up front so a typo

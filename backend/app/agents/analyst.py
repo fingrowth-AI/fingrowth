@@ -28,7 +28,9 @@ from app.models.analysis import (
     MACDIndicator,
     TechnicalIndicators,
 )
+from app.models.fundamentals import FundamentalsSnapshot
 from app.models.research import ResearchPacket
+from app.tools.fundamentals import format_compact_usd
 from app.tools.technical import (
     calculate_bollinger,
     calculate_macd,
@@ -46,16 +48,39 @@ _MACD_MIN_BARS = 34  # slow(26) + signal(9) - 1
 _SMA_MIN_BARS = 20
 _BOLLINGER_MIN_BARS = 20
 
-_NARRATIVE_SYSTEM_PROMPT = (
-    "You are a financial research assistant. Interpret the deterministic "
-    "technical indicators you are given — do not just restate their values. "
-    "Explain what each key signal means (e.g. what an overbought RSI or a "
-    "positive MACD histogram implies for momentum) and explicitly call out "
-    "when signals agree or conflict (e.g. RSI overbought while MACD is still "
-    "positive). Anchor every interpretive claim to a provided indicator value "
-    "by quoting that value, so the reader can verify it. Never state a number "
-    "that is not in the provided indicators, never recompute or predict prices, "
-    "and never recommend buy or sell. Use hedging language. Output 3-5 "
+# Question-first framing shared by both routes: the user's actual question is a
+# first-class input, and the answer to it leads the narrative. The data rules
+# differ per route, so each route carries its own system prompt.
+_TECHNICAL_SYSTEM_PROMPT = (
+    "You are a financial research assistant. You are given the user's "
+    "question and deterministic technical indicators. Lead with a direct, "
+    "factual answer to the user's specific question based on that data, then "
+    "interpret the indicators as supporting context — do not just restate "
+    "their values. Explain what each key signal means (e.g. what an "
+    "overbought RSI or a positive MACD histogram implies for momentum) and "
+    "explicitly call out when signals agree or conflict. Anchor every "
+    "interpretive claim to a provided indicator value by quoting that value, "
+    "so the reader can verify it. Never state a number that is not in the "
+    "provided data, never recompute or predict prices, and never recommend "
+    "buy or sell — if the question asks for a buy/sell decision or a "
+    "prediction, say that is outside research scope and describe the current "
+    "data instead. Use hedging language. Output 3-5 sentences of plain "
+    "English."
+)
+_FUNDAMENTAL_SYSTEM_PROMPT = (
+    "You are a financial research assistant. You are given the user's "
+    "question, the company's latest reported quarterly figures (revenue, net "
+    "income, EPS, year-over-year changes), valuation context, and technical "
+    "indicators. Lead with a direct, factual answer to the user's specific "
+    "question using the fundamentals — e.g. for an earnings question, state "
+    "how the latest reported quarter actually went, quoting the provided "
+    "figures exactly as given. Technical indicators are supporting context "
+    "only; mention them briefly at most. Never state a number that is not in "
+    "the provided data, never recompute or predict prices or results, and "
+    "never recommend buy or sell — if the question asks for a buy/sell "
+    "decision or a prediction, say that is outside research scope and "
+    "describe the reported data instead. Use hedging language for "
+    "interpretation (reported facts may be stated plainly). Output 3-6 "
     "sentences of plain English."
 )
 
@@ -288,13 +313,24 @@ def _macd_state(macd: MACDIndicator | None) -> str | None:
     return "flat"
 
 
-def build_verdict(ticker: str, indicators: TechnicalIndicators) -> str:
+def build_verdict(
+    ticker: str,
+    indicators: TechnicalIndicators,
+    analysis_type: str = "technical",
+    fundamentals: FundamentalsSnapshot | None = None,
+) -> str:
     """A one-line, number-free, descriptive takeaway (<= ~15 words).
 
     Descriptive only — it characterizes the current read ("looks stretched"),
-    never a directive ("buy"/"sell"/"should"). Deterministic from the indicators.
+    never a directive ("buy"/"sell"/"should"). Deterministic from the data.
+    On the fundamental route the verdict reflects the latest reported quarter,
+    so an earnings question gets an earnings takeaway, not a momentum one.
     """
     subject = ticker.upper() if ticker else "This"
+
+    if analysis_type == "fundamental":
+        return _fundamental_verdict(subject, fundamentals)
+
     rsi = _rsi_state(indicators.rsi)
     macd = _macd_state(indicators.macd)
     if rsi is None:
@@ -323,16 +359,58 @@ def build_verdict(ticker: str, indicators: TechnicalIndicators) -> str:
     return f"{subject} looks rangebound — a neutral RSI and little momentum either way."
 
 
-def build_interpretation(indicators: TechnicalIndicators) -> list:
-    """Number-free Momentum / Trend / Range chunks (only those with data).
+def _fundamental_verdict(
+    subject: str, fundamentals: FundamentalsSnapshot | None
+) -> str:
+    """Number-free latest-quarter takeaway (the narrative carries the figures)."""
+    if fundamentals is None or not fundamentals.has_quarter:
+        return (
+            f"{subject}: latest financials unavailable — see filings and "
+            "headlines below."
+        )
+    revenue_word = _direction_word(fundamentals.revenue_yoy_pct)
+    income_word = _direction_word(fundamentals.net_income_yoy_pct)
+    if revenue_word and income_word:
+        return (
+            f"{subject}'s latest quarter: revenue {revenue_word} and profit "
+            f"{income_word} year over year."
+        )
+    if revenue_word:
+        return f"{subject}'s latest quarter: revenue {revenue_word} year over year."
+    if income_word:
+        return f"{subject}'s latest quarter: profit {income_word} year over year."
+    return f"{subject}'s latest reported quarter is summarized below."
 
-    Returns a list of :class:`InterpretationSection`; imported lazily to avoid a
-    models import cycle. Each body is 1-2 sentences of meaning — the precise
-    values stay in the indicator card.
+
+def _direction_word(yoy_pct: float | None) -> str | None:
+    if yoy_pct is None:
+        return None
+    if yoy_pct > 0:
+        return "grew"
+    if yoy_pct < 0:
+        return "declined"
+    return "held flat"
+
+
+def build_interpretation(
+    indicators: TechnicalIndicators,
+    analysis_type: str = "technical",
+    fundamentals: FundamentalsSnapshot | None = None,
+) -> list:
+    """Number-free labeled chunks (only those with data).
+
+    Technical route: Momentum / Trend / Range. Fundamental route: Earnings /
+    Valuation first — what the question asked about — with Momentum demoted to
+    supporting context. Returns a list of :class:`InterpretationSection`;
+    imported lazily to avoid a models import cycle. Each body is 1-2 sentences
+    of meaning — the precise values stay in the narrative and the indicator card.
     """
     from app.models.analysis import InterpretationSection
 
     sections: list[InterpretationSection] = []
+
+    if analysis_type == "fundamental":
+        sections.extend(_fundamental_sections(fundamentals))
 
     rsi = _rsi_state(indicators.rsi)
     macd = _macd_state(indicators.macd)
@@ -357,25 +435,126 @@ def build_interpretation(indicators: TechnicalIndicators) -> list:
             momentum += " The two pull in different directions, so read them together."
         sections.append(InterpretationSection(label="Momentum", body=momentum))
 
-    if indicators.sma_20 is not None and indicators.latest_close is not None:
-        if indicators.latest_close > indicators.sma_20:
-            trend = "Price is trading above its 20-day average — a mild uptrend."
-        elif indicators.latest_close < indicators.sma_20:
-            trend = "Price is trading below its 20-day average — a mild downtrend."
-        else:
-            trend = "Price is sitting right on its 20-day average — a flat trend."
-        sections.append(InterpretationSection(label="Trend", body=trend))
+    # Trend/Range stay technical-route detail; on the fundamental route the
+    # Momentum chunk above is already the supporting context.
+    if analysis_type != "fundamental":
+        if indicators.sma_20 is not None and indicators.latest_close is not None:
+            if indicators.latest_close > indicators.sma_20:
+                trend = "Price is trading above its 20-day average — a mild uptrend."
+            elif indicators.latest_close < indicators.sma_20:
+                trend = "Price is trading below its 20-day average — a mild downtrend."
+            else:
+                trend = "Price is sitting right on its 20-day average — a flat trend."
+            sections.append(InterpretationSection(label="Trend", body=trend))
 
-    if indicators.bollinger is not None and indicators.latest_close is not None:
-        if indicators.latest_close > indicators.bollinger.upper:
-            rng = "Price is above its upper Bollinger band — an unusually stretched reading."
-        elif indicators.latest_close < indicators.bollinger.lower:
-            rng = "Price is below its lower Bollinger band — an unusually stretched reading."
-        else:
-            rng = "Price is within its Bollinger bands — a normal trading range."
-        sections.append(InterpretationSection(label="Range", body=rng))
+        if indicators.bollinger is not None and indicators.latest_close is not None:
+            if indicators.latest_close > indicators.bollinger.upper:
+                rng = "Price is above its upper Bollinger band — an unusually stretched reading."
+            elif indicators.latest_close < indicators.bollinger.lower:
+                rng = "Price is below its lower Bollinger band — an unusually stretched reading."
+            else:
+                rng = "Price is within its Bollinger bands — a normal trading range."
+            sections.append(InterpretationSection(label="Range", body=rng))
 
     return sections
+
+
+def _fundamental_sections(fundamentals: FundamentalsSnapshot | None) -> list:
+    """Number-free Earnings / Valuation chunks for the fundamental route."""
+    from app.models.analysis import InterpretationSection
+
+    sections: list[InterpretationSection] = []
+    if fundamentals is None:
+        return sections
+
+    if fundamentals.has_quarter:
+        revenue_word = _direction_word(fundamentals.revenue_yoy_pct)
+        income_word = _direction_word(fundamentals.net_income_yoy_pct)
+        bits: list[str] = []
+        if revenue_word:
+            bits.append(f"revenue {revenue_word}")
+        if income_word:
+            bits.append(f"net income {income_word}")
+        if bits:
+            earnings = (
+                "In the most recently reported quarter, "
+                + " and ".join(bits)
+                + " versus the same quarter a year earlier."
+            )
+        else:
+            earnings = (
+                "The most recent reported quarter's results are summarized "
+                "in the narrative above."
+            )
+        sections.append(InterpretationSection(label="Earnings", body=earnings))
+
+    valuation_bits: list[str] = []
+    if fundamentals.pe_ratio is not None:
+        if fundamentals.pe_ratio <= 0:
+            multiple = "shares have no meaningful earnings multiple right now"
+        elif fundamentals.pe_ratio >= 40:
+            multiple = "shares trade at a rich earnings multiple"
+        elif fundamentals.pe_ratio >= 15:
+            multiple = "shares trade at a moderate earnings multiple"
+        else:
+            multiple = "shares trade at a low earnings multiple"
+        valuation_bits.append(multiple)
+    if fundamentals.dividend_yield is not None and fundamentals.dividend_yield > 0:
+        valuation_bits.append("the company pays a dividend")
+    if valuation_bits:
+        valuation = (
+            ", and ".join(valuation_bits).capitalize()
+            + " — context for the results, not a signal on its own."
+        )
+        sections.append(InterpretationSection(label="Valuation", body=valuation))
+
+    return sections
+
+
+def _fundamental_lead(ticker: str, fundamentals: FundamentalsSnapshot) -> list[str]:
+    """Deterministic earnings-answer sentences for the fundamental fallback.
+
+    Every figure is formatted via :func:`format_compact_usd` or at a precision
+    the snapshot's ``allowed_numbers`` admits, so the numeric guards (analyst
+    gate and Risk Critic) recognize each one as legitimate.
+    """
+    parts: list[str] = []
+    if fundamentals.has_quarter:
+        quarter_bits: list[str] = []
+        if fundamentals.revenue is not None:
+            revenue = format_compact_usd(fundamentals.revenue)
+            if fundamentals.revenue_yoy_pct is not None:
+                word = "up" if fundamentals.revenue_yoy_pct >= 0 else "down"
+                revenue += (
+                    f" ({word} {abs(fundamentals.revenue_yoy_pct):.1f}% year over year)"
+                )
+            quarter_bits.append(f"revenue of {revenue}")
+        if fundamentals.net_income is not None:
+            income = format_compact_usd(fundamentals.net_income)
+            if fundamentals.net_income_yoy_pct is not None:
+                word = "up" if fundamentals.net_income_yoy_pct >= 0 else "down"
+                income += (
+                    f" ({word} {abs(fundamentals.net_income_yoy_pct):.1f}% year over year)"
+                )
+            quarter_bits.append(f"net income of {income}")
+        if fundamentals.eps_diluted is not None:
+            quarter_bits.append(f"diluted EPS of ${fundamentals.eps_diluted:.2f}")
+        when = (
+            f"For the quarter ended {fundamentals.period_end:%B %d, %Y}, "
+            if fundamentals.period_end
+            else "In its most recently reported quarter, "
+        )
+        parts.append(f"{when}{ticker} reported " + ", ".join(quarter_bits) + ".")
+    valuation_bits: list[str] = []
+    if fundamentals.pe_ratio is not None and fundamentals.pe_ratio > 0:
+        valuation_bits.append(f"a P/E ratio of {fundamentals.pe_ratio:.2f}")
+    if fundamentals.market_cap is not None:
+        valuation_bits.append(
+            f"a market capitalization of {format_compact_usd(fundamentals.market_cap)}"
+        )
+    if valuation_bits:
+        parts.append(f"Shares carry {' and '.join(valuation_bits)}.")
+    return parts
 
 
 def _fallback_narrative(
@@ -384,6 +563,7 @@ def _fallback_narrative(
     packet: ResearchPacket,
     portfolio_profile: dict[str, Any] | None = None,
     prior_analyses: list[dict[str, Any]] | None = None,
+    analysis_type: str = "technical",
 ) -> str:
     """Deterministic interpretive narrative used when no LLM is configured (V10-01).
 
@@ -393,10 +573,35 @@ def _fallback_narrative(
     so the narrative stays auditable, can't state a figure that differs from the
     deterministic math, and the "references computed indicators" contract holds
     offline.
+
+    On the fundamental route the narrative *leads with the earnings answer* —
+    the latest reported quarter's figures — and the technical read follows as
+    supporting context, so an earnings question is answered with earnings data
+    even offline.
     """
-    parts: list[str] = [
+    parts: list[str] = []
+    if analysis_type == "fundamental":
+        fundamentals = packet.fundamentals
+        if fundamentals is not None and (
+            fundamentals.has_quarter or fundamentals.pe_ratio is not None
+        ):
+            parts.extend(_fundamental_lead(ticker, fundamentals))
+            parts.append(
+                "These are the latest reported figures; they describe how the "
+                "most recent period went and suggest nothing about future "
+                "results. The technical context below is supporting detail."
+            )
+        else:
+            parts.append(
+                f"We couldn't retrieve {ticker}'s latest reported financials, "
+                "so the earnings question can't be answered with figures right "
+                "now; recent filings and headlines are listed below, and the "
+                "technical read follows as general context."
+            )
+
+    parts.append(
         f"Technical read for {ticker} from {indicators.sample_size} daily closes."
-    ]
+    )
 
     rsi_lean: str | None = None
     macd_lean: str | None = None
@@ -474,7 +679,10 @@ _NUMERIC_TOKEN_RE = re.compile(
 _NUMERIC_TOLERANCE = 0.01
 
 
-def _allowed_numbers(indicators: TechnicalIndicators) -> list[float]:
+def _allowed_numbers(
+    indicators: TechnicalIndicators,
+    fundamentals: FundamentalsSnapshot | None = None,
+) -> list[float]:
     """Every number the narrative may legitimately quote — the computed values."""
     vals: list[float] = []
     if indicators.rsi is not None:
@@ -493,16 +701,22 @@ def _allowed_numbers(indicators: TechnicalIndicators) -> list[float]:
         )
     if indicators.latest_close is not None:
         vals.append(indicators.latest_close)
+    if fundamentals is not None:
+        vals.extend(fundamentals.allowed_numbers())
     return vals
 
 
-def _states_unsupported_number(text: str, indicators: TechnicalIndicators) -> bool:
+def _states_unsupported_number(
+    text: str,
+    indicators: TechnicalIndicators,
+    fundamentals: FundamentalsSnapshot | None = None,
+) -> bool:
     """True if the text quotes a price-like number that matches no computed value.
 
     This is the criterion-4 guard for the live LLM path: a narrative that states
     a figure differing from the deterministic output is rejected (→ fallback).
     """
-    allowed = _allowed_numbers(indicators)
+    allowed = _allowed_numbers(indicators, fundamentals)
     for match in _NUMERIC_TOKEN_RE.finditer(text):
         raw = match.group("dollar") or match.group("decimal")
         if raw is None:
@@ -511,8 +725,10 @@ def _states_unsupported_number(text: str, indicators: TechnicalIndicators) -> bo
             value = float(raw)
         except ValueError:
             continue
+        # Compare magnitudes — the token pattern can't capture a leading minus
+        # sign, so a quoted negative value surfaces unsigned.
         if not any(
-            math.isclose(value, a, abs_tol=_NUMERIC_TOLERANCE, rel_tol=0.0)
+            math.isclose(abs(value), abs(a), abs_tol=_NUMERIC_TOLERANCE, rel_tol=0.0)
             for a in allowed
         ):
             return True
@@ -583,25 +799,49 @@ def _narrative_references_indicators(
     return True
 
 
+def _llm_output_valid(
+    text: str,
+    indicators: TechnicalIndicators,
+    fundamentals: FundamentalsSnapshot | None,
+    analysis_type: str,
+) -> bool:
+    """Post-validate LLM output per route.
+
+    Technical: the narrative is *about* the indicators, so it must name and
+    quote each computed one (the V10-01 contract). Fundamental: the narrative
+    is about the question — indicators are optional supporting context — so
+    the only hard requirement is that every price-like number it quotes is one
+    of the deterministic values (indicators or fundamentals).
+    """
+    if not text:
+        return False
+    if analysis_type == "fundamental":
+        return not _states_unsupported_number(text, indicators, fundamentals)
+    return _narrative_references_indicators(text, indicators)
+
+
 def narrate(
     ticker: str,
     indicators: TechnicalIndicators,
     packet: ResearchPacket,
     portfolio_profile: dict[str, Any] | None = None,
     prior_analyses: list[dict[str, Any]] | None = None,
+    analysis_type: str = "technical",
 ) -> str:
-    """LLM narration of the indicators, with a deterministic fallback.
+    """LLM narration answering the user's question, with a deterministic fallback.
 
-    Tests monkeypatch this function directly to keep the suite offline. If
-    ``openai_api_key`` is unset, the LLM call raises, or the LLM's output
-    fails to reference the computed indicators, the deterministic template
-    is used instead so the agent never crashes the pipeline and the
-    "narrative references computed indicators" acceptance contract holds
-    in every path.
+    The user's actual question (``packet.query``) is a first-class input: the
+    LLM is instructed to lead with a direct answer to it, with the deterministic
+    data as evidence. Tests monkeypatch this function directly to keep the
+    suite offline. If ``openai_api_key`` is unset, the LLM call raises, or the
+    LLM's output fails validation for its route, the deterministic template is
+    used instead so the agent never crashes the pipeline and the acceptance
+    contracts hold in every path.
     """
     if not settings.openai_api_key:
         return _fallback_narrative(
-            ticker, indicators, packet, portfolio_profile, prior_analyses
+            ticker, indicators, packet, portfolio_profile, prior_analyses,
+            analysis_type,
         )
     try:
         # Lazy import so tests / environments without langchain_openai
@@ -614,35 +854,51 @@ def narrate(
             api_key=settings.openai_api_key,
             temperature=0,
         )
+        fundamentals = packet.fundamentals
+        fundamentals_line = (
+            f"Latest reported quarter & valuation: {fundamentals.model_dump_json()}\n"
+            if fundamentals is not None
+            else ""
+        )
         prompt = (
+            f"User's question: {packet.query or 'not provided'}\n"
             f"Ticker: {ticker}\n"
+            f"{fundamentals_line}"
             f"Indicators: {indicators.model_dump_json()}\n"
             f"Recent headlines: {[n.headline for n in packet.news[:5]]}\n"
             f"Sources degraded: {packet.degraded}\n"
             f"Portfolio profile: {portfolio_profile or 'not provided'}\n"
             f"Prior analyses (the user's earlier related questions): "
             f"{_prior_context_sentence(prior_analyses) or 'none'}\n"
-            "Write an interpretive narrative: explain what the indicators mean "
-            "together — where they agree, where they conflict — quoting each "
-            "value you reference so the reader can verify it. If a portfolio "
-            "profile is provided, briefly tailor the language to its risk "
-            "orientation and diversification without recomputing any numbers. If "
-            "prior analyses are provided, note briefly how this relates to them."
+            "Answer the user's question directly in your first sentence using "
+            "only the data above, then add the supporting interpretation — "
+            "quoting each value you reference so the reader can verify it. If "
+            "a portfolio profile is provided, briefly tailor the language to "
+            "its risk orientation and diversification without recomputing any "
+            "numbers. If prior analyses are provided, note briefly how this "
+            "relates to them."
+        )
+        system_prompt = (
+            _FUNDAMENTAL_SYSTEM_PROMPT
+            if analysis_type == "fundamental"
+            else _TECHNICAL_SYSTEM_PROMPT
         )
         result = llm.invoke(
             [
-                SystemMessage(content=_NARRATIVE_SYSTEM_PROMPT),
+                SystemMessage(content=system_prompt),
                 HumanMessage(content=prompt),
             ]
         )
         text = str(result.content).strip()
-        if not _narrative_references_indicators(text, indicators):
+        if not _llm_output_valid(text, indicators, fundamentals, analysis_type):
             logger.warning(
-                "LLM narrative did not reference all computed indicators; "
-                "falling back to deterministic template"
+                "LLM narrative failed %s-route validation; "
+                "falling back to deterministic template",
+                analysis_type,
             )
             return _fallback_narrative(
-                ticker, indicators, packet, portfolio_profile, prior_analyses
+                ticker, indicators, packet, portfolio_profile, prior_analyses,
+                analysis_type,
             )
         return text
     except Exception as exc:
@@ -650,7 +906,8 @@ def narrate(
             "LLM narration failed, using deterministic fallback: %s", exc
         )
         return _fallback_narrative(
-            ticker, indicators, packet, portfolio_profile, prior_analyses
+            ticker, indicators, packet, portfolio_profile, prior_analyses,
+            analysis_type,
         )
 
 
@@ -658,18 +915,22 @@ def analyze(
     packet: ResearchPacket,
     portfolio_profile: dict[str, Any] | None = None,
     prior_analyses: list[dict[str, Any]] | None = None,
+    analysis_type: str = "technical",
 ) -> AnalysisReport:
     """Produce an :class:`AnalysisReport` from a :class:`ResearchPacket`.
 
-    The only side effect is the LLM call inside :func:`narrate`; everything else
-    is a deterministic function of ``packet``, ``portfolio_profile``, and the
-    recalled ``prior_analyses`` (V12-06).
+    ``analysis_type`` ("technical" | "fundamental") selects what the narrative,
+    verdict and interpretation lead with — the question's subject — while the
+    deterministic indicators are always computed and attached. The only side
+    effect is the LLM call inside :func:`narrate`; everything else is a
+    deterministic function of the inputs.
     """
     closes = _closes(packet)
     indicators, notes = _compute_indicators(closes)
     confidence = _assess_confidence(packet, indicators)
     narrative = narrate(
-        packet.ticker, indicators, packet, portfolio_profile, prior_analyses
+        packet.ticker, indicators, packet, portfolio_profile, prior_analyses,
+        analysis_type,
     )
     return AnalysisReport(
         ticker=packet.ticker,
@@ -677,8 +938,13 @@ def analyze(
         narrative=narrative,
         confidence_level=confidence,
         notes=notes,
-        verdict=build_verdict(packet.ticker, indicators),
-        interpretation=build_interpretation(indicators),
+        verdict=build_verdict(
+            packet.ticker, indicators, analysis_type, packet.fundamentals
+        ),
+        interpretation=build_interpretation(
+            indicators, analysis_type, packet.fundamentals
+        ),
+        fundamentals=packet.fundamentals,
     )
 
 
@@ -700,5 +966,12 @@ def analyst_node(state: dict[str, Any]) -> dict[str, Any]:
         return {"path": ["analyst"], "analysis": report.model_dump(mode="json")}
 
     packet = ResearchPacket.model_validate(research)
-    report = analyze(packet, portfolio_profile, prior_analyses)
+    # The route decides what the report leads with: fundamental answers with
+    # earnings/valuation data, technical with the indicator read.
+    analysis_type = (
+        "fundamental"
+        if state.get("route") == "fundamental_analysis"
+        else "technical"
+    )
+    report = analyze(packet, portfolio_profile, prior_analyses, analysis_type)
     return {"path": ["analyst"], "analysis": report.model_dump(mode="json")}

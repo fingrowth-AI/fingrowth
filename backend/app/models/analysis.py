@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.models.fundamentals import FundamentalsSnapshot
+
 # confidence_level values are constrained to this set; anything else means a
 # bug in the agent. Order in the Literal is informational only.
 ConfidenceLevel = Literal["high", "medium", "low", "insufficient_data"]
@@ -84,5 +86,10 @@ class AnalysisReport(BaseModel):
     notes: list[str] = Field(default_factory=list)
     # One-line plain-language takeaway (<= ~15 words, descriptive, no numbers).
     verdict: str = ""
-    # Labeled meaning-only chunks (Momentum / Trend / Range).
+    # Labeled meaning-only chunks (Momentum / Trend / Range — or, on the
+    # fundamental route, Earnings / Valuation / Momentum).
     interpretation: list[InterpretationSection] = Field(default_factory=list)
+    # The deterministic fundamentals the narrative may quote (fundamental route
+    # only). Carried on the report so the Risk Critic can recognise legitimate
+    # references to these values exactly like it does for indicators.
+    fundamentals: FundamentalsSnapshot | None = None

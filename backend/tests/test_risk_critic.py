@@ -525,3 +525,48 @@ def test_risk_critic_node_handles_empty_analysis_dict():
 
     review = RiskReview.model_validate(result["risk_review"])
     assert review.disclaimer == STANDARD_DISCLAIMER
+
+
+# ---------------------------------------------------------------------------
+# Fundamental route: the report's fundamentals are legitimate numbers
+# ---------------------------------------------------------------------------
+
+
+def test_fundamentals_figures_are_not_flagged_as_unsupported():
+    from app.models.fundamentals import FundamentalsSnapshot
+
+    report = _report(
+        "For the latest quarter the company reported revenue of $26.04 billion "
+        "and diluted EPS of $0.76; shares may carry a P/E ratio of 55.50."
+    )
+    report.fundamentals = FundamentalsSnapshot(
+        revenue=26_044_000_000, eps_diluted=0.76, pe_ratio=55.5
+    )
+
+    review = critique(report)
+
+    assert review.approved is True
+    assert not any(f.code == "unsupported_numeric_claim" for f in review.flags)
+
+
+def test_fabricated_figures_still_flagged_with_fundamentals_present():
+    from app.models.fundamentals import FundamentalsSnapshot
+
+    report = _report("Revenue may have been $99.99 billion this quarter.")
+    report.fundamentals = FundamentalsSnapshot(revenue=26_044_000_000)
+
+    review = critique(report)
+
+    assert any(f.code == "unsupported_numeric_claim" for f in review.flags)
+
+
+def test_fundamental_narrative_still_rejected_for_advice():
+    """Guardrails are route-independent: earnings answers can't recommend."""
+    from app.models.fundamentals import FundamentalsSnapshot
+
+    report = _report("Earnings were strong, so we recommend buying the stock now.")
+    report.fundamentals = FundamentalsSnapshot(revenue=26_044_000_000)
+
+    review = critique(report)
+
+    assert review.approved is False

@@ -33,6 +33,10 @@ struct AnalysisQuery: Codable, Sendable, Equatable {
     var query: String
     var ticker: String
     var analysisType: AnalysisType
+    // True when the user explicitly picked the type (V12-04 override). The
+    // backend Router then respects it verbatim; an auto-detected type may be
+    // re-derived server-side from the query text.
+    var typeOverridden: Bool = false
     var sessionId: UUID?
 }
 
