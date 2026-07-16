@@ -35,6 +35,7 @@ AGENTS.md
 # Design doc (Word → Markdown export); explicit + generic patterns
 /AI_Investment_Strategist_Design_Doc_v2.1.docx.md
 AI_Investment_Strategist_Design_Doc_v3.md
+FinGrowth_Design_Doc_v3.md
 *.docx
 *.docx.md
 
