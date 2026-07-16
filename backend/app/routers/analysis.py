@@ -34,12 +34,13 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.agents.analyst import _prior_context_sentence
 from app.agents.graph import agent_graph
 from app.auth import CurrentUser
+from app.config import settings
 from app.models.risk import STANDARD_DISCLAIMER
 from app.models.schemas import (
     AnalysisData,
@@ -49,9 +50,56 @@ from app.models.schemas import (
     ResearchData,
     RiskReview,
 )
+from app.services import usage_limits
 from app.services.analysis_memory import AnalysisMemory, past_analysis_payload
 
 logger = logging.getLogger(__name__)
+
+
+async def _enforce_request_limits(user_id: uuid.UUID) -> None:
+    """Reject the request with 429 when any analysis allowance is exhausted.
+
+    Each analysis costs real money (one LLM call plus the data-provider
+    fan-out), so three fixed-window checks run before the pipeline starts:
+    a per-user burst limit, a per-user daily allowance, and a global daily
+    kill switch that bounds the deployment's total spend no matter how many
+    users show up. Unauthenticated requests all resolve to the shared default
+    user (see app.auth), so anonymous traffic collectively shares one
+    allowance rather than getting a fresh one per install.
+    """
+    checks = (
+        (
+            "analysis-minute",
+            str(user_id),
+            settings.analysis_requests_per_minute_per_user,
+            60,
+            "You're sending requests too quickly. Please wait a moment and try again.",
+        ),
+        (
+            "analysis-day",
+            str(user_id),
+            settings.analysis_requests_per_day_per_user,
+            86400,
+            "You've reached today's research limit. Your allowance resets at midnight UTC.",
+        ),
+        (
+            "analysis-day-global",
+            "global",
+            settings.analysis_requests_per_day_global,
+            86400,
+            "The research service has reached today's capacity. Please try again tomorrow.",
+        ),
+    )
+    for scope, key, limit, window_seconds, message in checks:
+        decision = await usage_limits.check(
+            scope, key, limit=limit, window_seconds=window_seconds
+        )
+        if not decision.allowed:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=message,
+                headers={"Retry-After": str(decision.retry_after)},
+            )
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
@@ -394,7 +442,12 @@ async def query_analysis(
 
     Accepts an ``Authorization: Bearer`` header resolved to ``current_user`` by
     :func:`get_current_user` (the default user until V8).
+
+    Rate-limited per user and globally (429 with ``Retry-After``) *before* the
+    pipeline starts, so a blocked request never spends an LLM call or a data
+    fetch.
     """
+    await _enforce_request_limits(current_user)
     session_id = body.session_id or uuid.uuid4()
     return StreamingResponse(
         _run_pipeline(body, session_id, current_user),

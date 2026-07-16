@@ -104,7 +104,10 @@ class AnalysisData(BaseModel):
 class AnalysisQuery(BaseModel):
     """Request body for POST /api/v1/analysis/query."""
 
-    query: str = Field(..., min_length=1)
+    # Bounded so a single request can't smuggle an arbitrarily large prompt
+    # into the LLM call (input tokens are billed too). The on-device rewriter
+    # sends short anonymized queries; 2000 chars is generous.
+    query: str = Field(..., min_length=1, max_length=2000)
     ticker: str = Field(..., min_length=1, max_length=10)
     # "fundamental" | "technical" | "general"
     analysis_type: str = Field(..., pattern=r"^(fundamental|technical|general)$")

@@ -55,6 +55,20 @@ class Settings(BaseSettings):
     # value <= 0 disables the quota entirely.
     alpha_vantage_daily_quota_per_user: int = 25
 
+    # Request limits (cost protection — see app.services.usage_limits). Each
+    # analysis triggers at most one gpt-4o-mini call (~2K prompt + <=700
+    # completion tokens ≈ $0.0007), so the per-user daily cap below bounds one
+    # user's LLM spend at roughly 3-4 cents/day — comfortably inside a
+    # ~50¢/day/user budget — and the global cap bounds the whole deployment at
+    # ~35¢/day even if every request misses the cache. Alpha Vantage has its
+    # own tighter quota (above). Non-positive values disable a check.
+    analysis_requests_per_minute_per_user: int = 6
+    analysis_requests_per_day_per_user: int = 50
+    analysis_requests_per_day_global: int = 500
+    # Paper-trading order submissions share Alpaca's account-wide 200 req/min
+    # limit; cap one user's burst so a runaway client can't starve the rest.
+    orders_per_minute_per_user: int = 10
+
     # Reject daily price data whose most-recent bar is older than this many
     # calendar days (V7-02). Sized to absorb weekends plus a long holiday
     # weekend so a normal market gap is tolerated, but genuinely stale data is

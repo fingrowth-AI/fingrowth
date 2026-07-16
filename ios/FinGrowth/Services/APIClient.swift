@@ -29,6 +29,8 @@ enum APIClientError: LocalizedError, Equatable {
             return "The backend URL '\(value)' is not valid. Update it in Settings."
         case .requestFailed(let code) where code == 401 || code == 403:
             return "The backend rejected this request (HTTP \(code)). Check your credentials in Settings."
+        case .requestFailed(let code) where code == 429:
+            return "You've reached the research request limit for now. Please try again later."
         case .requestFailed(let code) where (500..<600).contains(code):
             return "The backend is unavailable (HTTP \(code)). Please try again in a moment."
         case .requestFailed(let code):

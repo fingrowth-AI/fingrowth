@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser
+from app.config import settings
 from app.db import get_session
 from app.models.market import PriceBar
 from app.models.trading import (
@@ -41,6 +42,7 @@ from app.models.trading import (
     PortfolioHistory,
     Position,
 )
+from app.services import usage_limits
 from app.services.virtual_balance import (
     available_buying_power,
     get_balance,
@@ -136,7 +138,17 @@ async def _reference_price(ticker: str) -> float:
     skipping the balance check — V8-03 validates *before* reaching Alpaca.
     """
     try:
-        bars = await get_daily_prices(ticker, days=1)
+        # Valuation tolerates an old close (same stance as the performance
+        # endpoint's mark-to-market), so cache the series for a full day and
+        # skip the staleness gate — an order placed on a Sunday or after a
+        # burned Alpha Vantage budget shouldn't be blocked when any close is
+        # available to estimate against.
+        bars = await get_daily_prices(
+            ticker,
+            days=1,
+            ttl=_BENCHMARK_CACHE_TTL_SECONDS,
+            max_staleness_days=0,
+        )
     except MissingAPIKeyError as exc:
         raise HTTPException(
             status_code=503,
@@ -252,6 +264,22 @@ async def place_order(
     virtual cash (sells add to the reconstructed balance), letting a user mint
     buying power out of nothing and bypass the buy check above.
     """
+    # Every order costs a reference-price lookup and an Alpaca round-trip on
+    # the shared account (200 req/min account-wide), so cap one user's burst
+    # before any of that spends anything.
+    decision = await usage_limits.check(
+        "orders-minute",
+        str(current_user),
+        limit=settings.orders_per_minute_per_user,
+        window_seconds=60,
+    )
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many orders. Please wait a moment and try again.",
+            headers={"Retry-After": str(decision.retry_after)},
+        )
+
     if body.side not in ALLOWED_SIDES:
         # Defensive: Literal[...] already enforces this, but we keep the
         # explicit check so a future schema relaxation can't open a hole.
@@ -545,6 +573,8 @@ async def performance(
             equity=eq.equity,
             portfolio_return=(eq.equity / base_equity - 1.0) if base_equity else 0.0,
             benchmark_return=(bar.close / base_close - 1.0) if base_close else 0.0,
+            invested=eq.invested,
+            pnl=eq.pnl,
         )
         for bar, eq in zip(bars, equity_points)
     ]

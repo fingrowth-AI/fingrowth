@@ -853,6 +853,10 @@ def narrate(
             model="gpt-4o-mini",
             api_key=settings.openai_api_key,
             temperature=0,
+            # A narrative is a short paragraph; capping the completion bounds
+            # the worst-case cost of a single call (validation below rejects
+            # degenerate output anyway, so a truncated ramble buys nothing).
+            max_tokens=700,
         )
         fundamentals = packet.fundamentals
         fundamentals_line = (
