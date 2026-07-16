@@ -50,6 +50,9 @@ struct ResearchView: View {
     // In-flight on-device classification for the current query text.
     @State private var classificationTask: Task<Void, Never>?
     @State private var showSuggestions: Bool = false
+    // Drives the "Ask another question" shortcut: focuses the query field
+    // after scrolling back to it, and drops the keyboard when a run starts.
+    @FocusState private var queryFocused: Bool
     @State private var lastPersistedSessionID: UUID?
     // Session ID of the last-saved history entry — used to link a paper
     // trade back to the analysis that inspired it (P4-04). UUID rather than
@@ -86,35 +89,49 @@ struct ResearchView: View {
         NavigationStack {
             ZStack {
                 MarketBackground()
-                ScrollView {
-                    // FG spacing rhythm: 16pt screen margins, 12pt between cards.
-                    VStack(alignment: .leading, spacing: 12) {
-                        researchHeader
-                        querySection
-                        if let auditErrorMessage {
-                            errorBanner(message: auditErrorMessage)
-                        }
-                        if let localOnlyMessage {
-                            localOnlyBanner(message: localOnlyMessage)
-                        }
-                        if let portfolioAnalysis {
-                            portfolioAnalysisSection(portfolioAnalysis)
-                        }
-                        if let controller {
-                            progressSection(controller: controller)
-                            resultSection(controller: controller)
-                            if let message = controller.errorMessage {
-                                errorBanner(message: message)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        // FG spacing rhythm: 16pt screen margins, 12pt between cards.
+                        VStack(alignment: .leading, spacing: 12) {
+                            researchHeader
+                                .id(Self.queryAnchorID)
+                            querySection
+                            if let auditErrorMessage {
+                                errorBanner(message: auditErrorMessage)
                             }
+                            if let localOnlyMessage {
+                                localOnlyBanner(message: localOnlyMessage)
+                            }
+                            if let portfolioAnalysis {
+                                portfolioAnalysisSection(portfolioAnalysis)
+                            }
+                            if let controller {
+                                progressSection(controller: controller)
+                                resultSection(controller: controller)
+                                if let message = controller.errorMessage {
+                                    errorBanner(message: message)
+                                }
+                            }
+                            researchEmptyState
+                            historySection
                         }
-                        researchEmptyState
-                        historySection
+                        .padding(.horizontal)
+                        .padding(.bottom, 28)
                     }
-                    .padding(.horizontal)
-                    .padding(.bottom, 28)
+                    // Shortcut back into the flow: once a result is on screen
+                    // (typically scrolled deep into it), one tap returns to the
+                    // query card ready for the next question.
+                    .overlay(alignment: .bottom) {
+                        if showAskAnotherShortcut {
+                            askAnotherButton(proxy)
+                        }
+                    }
                 }
             }
             .scrollContentBackground(.hidden)
+            // Tap on any dead space to drop the keyboard (safe here: this is a
+            // ScrollView, not a List/Form, so buttons keep their own taps).
+            .dismissesKeyboardOnTap()
             // The screens-after header is custom (title + privacy badge), so the
             // system navigation bar stays hidden.
             .toolbar(.hidden, for: .navigationBar)
@@ -143,6 +160,44 @@ struct ResearchView: View {
     }
 
     // MARK: - Query
+
+    private static let queryAnchorID = "research-query-anchor"
+
+    private var showAskAnotherShortcut: Bool {
+        controller?.finalResult != nil
+            && controller?.isRunning != true
+            && !queryFocused
+    }
+
+    // Floating pill above the tab bar: scrolls back to the query card, clears
+    // the answered question (keeping the ticker for natural follow-ups), and
+    // opens the keyboard — one tap from reading a result to asking the next.
+    private func askAnotherButton(_ proxy: ScrollViewProxy) -> some View {
+        Button {
+            query = ""
+            analysisTypeUserOverridden = false
+            showSuggestions = false
+            withAnimation(.easeInOut(duration: 0.3)) {
+                proxy.scrollTo(Self.queryAnchorID, anchor: .top)
+            }
+            queryFocused = true
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "plus.bubble.fill")
+                Text("Ask another question")
+            }
+            .font(.system(size: 14.5, weight: .bold))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .background(FinTheme.accent, in: Capsule())
+        .foregroundStyle(FinTheme.onAccent)
+        .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+        .padding(.bottom, 10)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
 
     // Screens-after header: heavy title, green-lock "Private by design" badge,
     // one-line promise underneath. Rendered on the page background, not a card.
@@ -181,6 +236,11 @@ struct ResearchView: View {
                     .foregroundStyle(FinTheme.textPrimary)
                     .lineLimit(2...4)
                     .textFieldStyle(.plain)
+                    .focused($queryFocused)
+                    // Return runs the analysis when it can (questions don't
+                    // need newlines), so query → answer is a single keystroke.
+                    .submitLabel(.search)
+                    .onSubmit { if canSubmit { run() } }
                     .onChange(of: query) { _, newValue in autoClassifyAnalysisType(newValue) }
 
                 tickerField
@@ -366,7 +426,11 @@ struct ResearchView: View {
                 .background(FinTheme.field(for: colorScheme))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .onChange(of: ticker) { _, _ in showSuggestions = true }
-                .onSubmit { showSuggestions = false }
+                .submitLabel(.go)
+                .onSubmit {
+                    showSuggestions = false
+                    if canSubmit { run() }
+                }
 
             if showSuggestions {
                 let suggestions = TickerCatalog.suggestions(
@@ -866,20 +930,14 @@ struct ResearchView: View {
         return "Mixed"
     }
 
-    // The received news items as (headline, source) rows for the
+    // The received news items as headline/source/url rows for the
     // "What's moving TICKER" section.
-    private func headlineRows(from news: [JSONValue]) -> [(headline: String, source: String?)] {
-        news.prefix(3).compactMap { item in
-            guard case .object(let fields) = item,
-                  let headline = fields["headline"]?.asString?
-                      .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !headline.isEmpty else { return nil }
-            return (headline, fields["source"]?.asString)
-        }
+    private func headlineRows(from news: [JSONValue]) -> [AnalysisResultPresenter.HeadlineItem] {
+        AnalysisResultPresenter.headlineItems(from: news, limit: 3)
     }
 
     @ViewBuilder
-    private func headlinesSection(ticker: String, rows: [(headline: String, source: String?)]) -> some View {
+    private func headlinesSection(ticker: String, rows: [AnalysisResultPresenter.HeadlineItem]) -> some View {
         if !rows.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel("What's moving \(ticker)")
@@ -887,25 +945,9 @@ struct ResearchView: View {
                 GlassPanel {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(row.headline)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(FinTheme.textPrimary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                if let source = row.source, !source.isEmpty {
-                                    Label(source, systemImage: "newspaper")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(FinTheme.textSecondary)
-                                        .padding(.horizontal, 7)
-                                        .padding(.vertical, 3)
-                                        .background(
-                                            FinTheme.inset,
-                                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        )
-                                }
-                            }
-                            .padding(.top, index == 0 ? 0 : 12)
-                            .padding(.bottom, index == rows.count - 1 ? 0 : 12)
+                            headlineRow(row)
+                                .padding(.top, index == 0 ? 0 : 12)
+                                .padding(.bottom, index == rows.count - 1 ? 0 : 12)
                             if index < rows.count - 1 {
                                 Rectangle().fill(FinTheme.line).frame(height: 1)
                             }
@@ -914,6 +956,54 @@ struct ResearchView: View {
                 }
             }
         }
+    }
+
+    // One article row. With a validated web URL the whole row is a Link that
+    // hands off to the user's default browser (a user action, not an app
+    // transmission — so no Privacy Audit Log entry); without one it renders as
+    // the same plain, non-tappable row as before.
+    @ViewBuilder
+    private func headlineRow(_ row: AnalysisResultPresenter.HeadlineItem) -> some View {
+        if let url = row.url {
+            Link(destination: url) {
+                headlineRowContent(row, linked: true)
+                    .contentShape(Rectangle())
+            }
+        } else {
+            headlineRowContent(row, linked: false)
+        }
+    }
+
+    private func headlineRowContent(
+        _ row: AnalysisResultPresenter.HeadlineItem, linked: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(row.headline)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(FinTheme.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                if linked {
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(FinTheme.textTertiary)
+                }
+            }
+            if let source = row.source, !source.isEmpty {
+                Label(source, systemImage: "newspaper")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(FinTheme.textSecondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(
+                        FinTheme.inset,
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Technicals grid
@@ -1233,6 +1323,7 @@ struct ResearchView: View {
 
     private func run() {
         ensureController()
+        queryFocused = false
         showSuggestions = false
         auditErrorMessage = nil
         localOnlyMessage = nil

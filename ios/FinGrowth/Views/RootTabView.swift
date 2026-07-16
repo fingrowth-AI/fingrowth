@@ -31,6 +31,13 @@ struct RootTabView: View {
         }
         .tint(FinTheme.accent)
         .preferredColorScheme(settings.appearance.colorScheme)
+        // Keyboard ergonomics, app-wide: dragging any scroll view tucks the
+        // keyboard away interactively (environment-propagated, so it reaches
+        // every ScrollView/Form/List including sheets). Tap-to-dismiss is NOT
+        // applied here: a tap gesture over UIKit-backed Lists/Forms steals row
+        // buttons' taps, so it's attached per-screen to ScrollView-based
+        // layouts only (see ResearchView).
+        .scrollDismissesKeyboard(.interactively)
         // App-wide thermal warning (P5-02): only when on-device AI is actually
         // enabled and using the real model — a hot device shouldn't claim AI is
         // throttled when nothing on-device is running (disabled or dev stub).
@@ -196,6 +203,25 @@ enum FinTheme {
             }],
             for: .normal
         )
+    }
+}
+
+extension UIApplication {
+    static func dismissKeyboard() {
+        shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
+        )
+    }
+}
+
+// Tap-outside-to-dismiss for the keyboard. Safe on ScrollView-based screens,
+// where child controls win their own taps and only "dead" space triggers the
+// gesture. Do NOT attach to a Form or List: the gesture competes with the
+// UIKit-backed row machinery and row buttons stop responding — Forms get a
+// keyboard-toolbar Done button instead (see PaperTradeOrderSheet).
+extension View {
+    func dismissesKeyboardOnTap() -> some View {
+        onTapGesture { UIApplication.dismissKeyboard() }
     }
 }
 
