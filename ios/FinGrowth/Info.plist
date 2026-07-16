@@ -13,9 +13,15 @@
     this) but a device hitting the Mac's LAN IP does.
   - NSLocalNetworkUsageDescription: iOS requires this string + a user "Allow"
     before the app may connect to a device on the local network.
+  - ITSAppUsesNonExemptEncryption: the app uses only exempt encryption (Apple
+    CryptoKit SHA256 hashing and standard HTTPS/TLS), so it qualifies for the
+    export-compliance exemption. Declaring this here lets TestFlight builds skip
+    the per-build encryption questionnaire.
 -->
 <plist version="1.0">
 <dict>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

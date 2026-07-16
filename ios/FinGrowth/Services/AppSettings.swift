@@ -33,7 +33,19 @@ final class AppSettings {
     static let onDeviceModelEnabledKey = "settings.on_device_model_enabled"
     static let portfolioPrivacyLevelKey = "settings.portfolio_privacy_level"
     static let hasSeenOnboardingKey = "settings.has_seen_onboarding"
-    static let defaultBackendURL = "http://localhost:8000"
+
+    // The default backend base URL depends on the build configuration. Debug
+    // builds (simulator/dev) talk to a locally running FastAPI backend, while
+    // Release builds (TestFlight/App Store) default to the hosted production
+    // API. The user can always override this in Settings; this only supplies the
+    // first-run value and the reset target.
+    static let defaultBackendURL: String = {
+        #if DEBUG
+        return "http://localhost:8000"
+        #else
+        return "https://api.fingrowth.app"
+        #endif
+    }()
 
     @ObservationIgnored private let defaults: UserDefaults
 
