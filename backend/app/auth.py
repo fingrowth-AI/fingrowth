@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.database import DEFAULT_USER_ID
@@ -52,3 +52,32 @@ async def get_current_user(
 
 # Annotated dependency alias so endpoints read as ``current_user: CurrentUser``.
 CurrentUser = Annotated[uuid.UUID, Depends(get_current_user)]
+
+
+async def get_authenticated_user(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
+    ] = None,
+) -> uuid.UUID:
+    """Resolve the requesting user, *requiring* a valid session token.
+
+    Same token verification as :func:`get_current_user` — the identical bearer
+    scheme and :func:`verify_session_token`, not a new auth path — but the safe
+    fallback to the default user is deliberately withheld. Destructive,
+    account-scoped operations (e.g. account deletion, 5.1.1(v)) must never
+    silently resolve a missing, forged, or expired token to the shared default
+    user and act on *their* data. A token that does not verify raises 401.
+    """
+    token = credentials.credentials if credentials is not None else None
+    user_id = verify_session_token(token)
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="A valid session token is required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user_id
+
+
+# Annotated alias for endpoints that must reject unauthenticated requests.
+AuthenticatedUser = Annotated[uuid.UUID, Depends(get_authenticated_user)]

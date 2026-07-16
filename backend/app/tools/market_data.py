@@ -10,6 +10,8 @@ with HTTP 200) as :class:`RateLimitError`.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import time
 from datetime import UTC, date, datetime
 from typing import Any
@@ -19,6 +21,8 @@ import httpx
 from app.config import settings
 from app.models.market import CompanyOverview, PriceBar
 from app.services import api_quota
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -99,8 +103,103 @@ def _now_wall() -> datetime:
     return datetime.now(tz=UTC)
 
 
-def _cache_set(key: str, value: Any, ttl: float) -> None:
-    _cache[key] = (value, time.monotonic() + ttl, _now_wall())
+def _cache_set(
+    key: str, value: Any, ttl: float, fetched_at: datetime | None = None
+) -> None:
+    _cache[key] = (value, time.monotonic() + ttl, fetched_at or _now_wall())
+
+
+# ---------------------------------------------------------------------------
+# Optional Redis L2 behind the in-process cache
+# ---------------------------------------------------------------------------
+#
+# The in-process dict dies with the process — and in development the process
+# restarts on every code reload, so each restart re-fetched SPY and every
+# traded ticker from Alpha Vantage and burned the 25-calls/day free tier
+# within hours. With Redis as a second layer the payloads survive restarts and
+# are shared across workers: one fetch really does serve everyone, all day.
+# Wired from the app lifespan; unreachable/unconfigured Redis degrades to the
+# in-process cache only, which is also what keeps the test suite hermetic.
+
+_REDIS_PREFIX = "mdcache:"
+_redis: Any | None = None
+
+
+def set_redis(client: Any | None) -> None:
+    """Override the L2 client (tests / startup)."""
+    global _redis
+    _redis = client
+
+
+async def startup_cache() -> None:
+    """Wire the Redis L2 if ``redis_url`` is set and reachable (non-fatal)."""
+    global _redis
+    url = settings.redis_url
+    if not url:
+        logger.info("market_data: no redis_url configured; in-process cache only")
+        return
+    try:
+        import redis.asyncio as aioredis
+
+        client = aioredis.from_url(url, encoding="utf-8", decode_responses=True)
+        await client.ping()
+        _redis = client
+        logger.info("market_data: using Redis-backed payload cache")
+    except Exception:
+        logger.warning(
+            "market_data: Redis unreachable; in-process cache only", exc_info=True
+        )
+
+
+async def shutdown_cache() -> None:
+    global _redis
+    if _redis is not None:
+        try:
+            await _redis.aclose()
+        finally:
+            _redis = None
+
+
+async def _cache_load(key: str) -> Any | None:
+    """L1 (in-process) then L2 (Redis) lookup, hydrating L1 on an L2 hit.
+
+    The L2 entry carries the original fetch timestamp and its remaining TTL,
+    both preserved into L1, so data freshness (V7-03) still reports when the
+    payload was actually retrieved — not when this process first saw it.
+    """
+    async with _cache_lock:
+        value = _cache_get(key)
+    if value is not None or _redis is None:
+        return value
+    try:
+        raw = await _redis.get(_REDIS_PREFIX + key)
+        if raw is None:
+            return None
+        ttl_ms = await _redis.pttl(_REDIS_PREFIX + key)
+        entry = json.loads(raw)
+        payload = entry["payload"]
+        fetched_at = datetime.fromisoformat(entry["fetched_at"])
+    except Exception:
+        logger.warning("market_data: Redis cache read failed", exc_info=True)
+        return None
+    if isinstance(ttl_ms, int) and ttl_ms > 0:
+        async with _cache_lock:
+            _cache[key] = (payload, time.monotonic() + ttl_ms / 1000.0, fetched_at)
+    return payload
+
+
+async def _cache_store(key: str, value: Any, ttl: float) -> None:
+    """Write through to L1 and (best-effort) L2 with one shared fetch time."""
+    fetched_at = _now_wall()
+    async with _cache_lock:
+        _cache_set(key, value, ttl, fetched_at=fetched_at)
+    if _redis is None:
+        return
+    try:
+        entry = json.dumps({"payload": value, "fetched_at": fetched_at.isoformat()})
+        await _redis.set(_REDIS_PREFIX + key, entry, px=max(1, int(ttl * 1000)))
+    except Exception:
+        logger.warning("market_data: Redis cache write failed", exc_info=True)
 
 
 def daily_prices_fetched_at(ticker: str) -> datetime | None:
@@ -263,10 +362,9 @@ async def get_daily_prices(
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
     try:
-        async with _cache_lock:
-            payload = _cache_get(f"daily:{symbol}:full")
-            if payload is None and size == "compact":
-                payload = _cache_get(f"daily:{symbol}:compact")
+        payload = await _cache_load(f"daily:{symbol}:full")
+        if payload is None and size == "compact":
+            payload = await _cache_load(f"daily:{symbol}:compact")
         if payload is None:
             await _enforce_quota(user_id)
             try:
@@ -282,8 +380,7 @@ async def get_daily_prices(
                 # The reserved call never produced usable data — refund it.
                 await _refund_quota(user_id)
                 raise
-            async with _cache_lock:
-                _cache_set(f"daily:{symbol}:{size}", payload, ttl)
+            await _cache_store(f"daily:{symbol}:{size}", payload, ttl)
 
         series: dict[str, dict[str, str]] = payload.get("Time Series (Daily)") or {}
         # Keys are ISO-formatted dates; sort descending and take the top N.
@@ -357,8 +454,7 @@ async def get_company_overview(
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
     try:
-        async with _cache_lock:
-            payload = _cache_get(cache_key)
+        payload = await _cache_load(cache_key)
         if payload is None:
             await _enforce_quota(user_id)
             try:
@@ -369,8 +465,7 @@ async def get_company_overview(
             except BaseException:
                 await _refund_quota(user_id)
                 raise
-            async with _cache_lock:
-                _cache_set(cache_key, payload, ttl)
+            await _cache_store(cache_key, payload, ttl)
 
         if not payload or not payload.get("Symbol"):
             return None

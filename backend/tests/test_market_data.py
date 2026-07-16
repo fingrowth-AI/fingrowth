@@ -47,8 +47,10 @@ def _api_key_and_cache(monkeypatch):
     monkeypatch.setattr(settings, "alpha_vantage_api_key", "test-key")
     monkeypatch.setattr(market_data, "DEFAULT_MIN_REQUEST_INTERVAL_SECONDS", 0.0)
     monkeypatch.setattr(market_data, "_today", lambda: date(2025, 2, 2))
+    market_data.set_redis(None)
     _clear_cache()
     yield
+    market_data.set_redis(None)
     _clear_cache()
 
 
@@ -687,4 +689,93 @@ async def test_full_cache_serves_a_narrower_window_without_refetch():
 
     assert len(wide) == 150
     assert len(narrow) == 30
+    assert calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Redis L2 payload cache (survives process restarts)
+# ---------------------------------------------------------------------------
+
+
+class _FakeRedis:
+    """Dict-backed stand-in for redis.asyncio: get/set/pttl/aclose only."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
+    async def pttl(self, key: str) -> int:
+        return 60_000 if key in self.store else -2
+
+    async def set(self, key: str, value: str, px: int | None = None) -> None:
+        self.store[key] = value
+
+    async def aclose(self) -> None:
+        pass
+
+
+class _BrokenRedis(_FakeRedis):
+    async def get(self, key: str) -> str | None:
+        raise ConnectionError("redis down")
+
+
+@pytest.mark.asyncio
+async def test_redis_l2_serves_after_process_restart():
+    """The whole point of the L2: an in-process cache wipe (dev reload, new
+    worker) must not trigger a fresh Alpha Vantage call when Redis still holds
+    the payload."""
+    fake = _FakeRedis()
+    market_data.set_redis(fake)
+    calls = 0
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_daily_payload(num_days=100))
+
+    async with _make_client(handler) as client:
+        first = await get_daily_prices("MSFT", 30, client=client)
+        _clear_cache()  # simulated restart: L1 gone, Redis untouched
+        second = await get_daily_prices("MSFT", 30, client=client)
+
+    assert calls == 1
+    assert first == second
+
+
+@pytest.mark.asyncio
+async def test_redis_l2_hit_preserves_original_fetch_time():
+    """V7-03: freshness must report the original fetch, not the L2 rehydration."""
+    market_data.set_redis(_FakeRedis())
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_daily_payload(num_days=100))
+
+    async with _make_client(handler) as client:
+        await get_daily_prices("MSFT", 30, client=client)
+        fetched_at = market_data.daily_prices_fetched_at("MSFT")
+        _clear_cache()
+        await get_daily_prices("MSFT", 30, client=client)  # L2 hit
+
+    rehydrated = market_data.daily_prices_fetched_at("MSFT")
+    assert fetched_at is not None
+    assert rehydrated == fetched_at
+
+
+@pytest.mark.asyncio
+async def test_redis_l2_failure_degrades_to_upstream():
+    """A broken Redis must never take down market data — fetch proceeds."""
+    market_data.set_redis(_BrokenRedis())
+    calls = 0
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_daily_payload(num_days=100))
+
+    async with _make_client(handler) as client:
+        bars = await get_daily_prices("MSFT", 30, client=client)
+
+    assert len(bars) == 30
     assert calls == 1
