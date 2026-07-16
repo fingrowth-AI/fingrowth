@@ -46,10 +46,19 @@ class Position(BaseModel):
 
 
 class PortfolioHistoryPoint(BaseModel):
-    """One equity sample on the account's value-over-time curve."""
+    """One equity sample on the account's value-over-time curve.
+
+    ``invested`` is the market value of the open positions that day (cost basis
+    plus unrealized P/L) and ``pnl`` the cumulative realized + unrealized P/L —
+    the "what my trades are worth / what I'm up or down" numbers the $100K
+    virtual seed would otherwise drown out. Both default to 0 for curves that
+    only carry account equity (e.g. Alpaca's own history).
+    """
 
     date: str  # ISO yyyy-mm-dd, derived from Alpaca's unix timestamp
     equity: float
+    invested: float = 0.0
+    pnl: float = 0.0
 
 
 class PortfolioHistory(BaseModel):
@@ -72,12 +81,18 @@ class PerformancePoint(BaseModel):
     ``portfolio_return`` and ``benchmark_return`` are cumulative fractions vs.
     the window's first day (0.05 == +5%), so the two series are directly
     comparable on one chart despite their different dollar scales.
+
+    ``invested`` / ``pnl`` mirror :class:`PortfolioHistoryPoint`: the day's
+    open-position market value and cumulative P/L, so the client can present
+    the curve in trade-sized dollars instead of against the $100K seed.
     """
 
     date: str  # ISO yyyy-mm-dd
     equity: float
     portfolio_return: float
     benchmark_return: float
+    invested: float = 0.0
+    pnl: float = 0.0
 
 
 class PerformanceComparison(BaseModel):

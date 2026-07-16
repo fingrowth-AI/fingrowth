@@ -44,6 +44,12 @@ struct PerformancePoint: Codable, Sendable, Equatable, Hashable {
     var equity: Double
     var portfolioReturn: Double
     var benchmarkReturn: Double
+    // Trade-sized figures: the day's open-position market value and cumulative
+    // realized+unrealized P/L, so the UI can show "what my trades are worth"
+    // instead of deltas on the $100K seed. Optional so an older backend that
+    // only ships account equity still decodes.
+    var invested: Double?
+    var pnl: Double?
 }
 
 struct PerformanceComparison: Codable, Sendable, Equatable {

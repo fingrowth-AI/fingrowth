@@ -816,6 +816,36 @@ def test_equity_series_marks_open_position_to_close():
     assert eq["2024-01-03"] == pytest.approx(SEED_EQUITY + 50)    # 10 × (105−100)
 
 
+def test_equity_series_reports_invested_value_and_pnl():
+    """The Robinhood-style fields: $100 of stock down $10 reads invested=90,
+    pnl=-10 — trade-sized numbers, not deltas on the $100K seed."""
+    orders = _orders(("buy", 10, 10, 1))  # $100 deployed
+    dates = [date(2024, 1, 1), date(2024, 1, 2)]
+    closes = {"AAPL": {date(2024, 1, 1): 10.0, date(2024, 1, 2): 9.0}}
+    series = reconstruct_equity_series(orders, dates, SEED_EQUITY, closes=closes)
+    by_date = {p.date: p for p in series}
+    assert by_date["2024-01-01"].invested == pytest.approx(100.0)
+    assert by_date["2024-01-01"].pnl == pytest.approx(0.0)
+    assert by_date["2024-01-02"].invested == pytest.approx(90.0)
+    assert by_date["2024-01-02"].pnl == pytest.approx(-10.0)
+
+
+def test_equity_series_invested_zero_after_full_exit_but_pnl_persists():
+    orders = _orders(("buy", 10, 10, 1), ("sell", 10, 11, 2))
+    dates = [date(2024, 1, d) for d in (1, 2, 3)]
+    series = reconstruct_equity_series(orders, dates, SEED_EQUITY)
+    by_date = {p.date: p for p in series}
+    assert by_date["2024-01-01"].invested == pytest.approx(100.0)
+    assert by_date["2024-01-03"].invested == pytest.approx(0.0)
+    assert by_date["2024-01-03"].pnl == pytest.approx(10.0)  # realized, carried
+
+
+def test_equity_series_invested_before_first_trade_is_zero():
+    series = reconstruct_equity_series([], [date(2024, 1, 1)], SEED_EQUITY)
+    assert series[0].invested == pytest.approx(0.0)
+    assert series[0].pnl == pytest.approx(0.0)
+
+
 def test_equity_series_forward_fills_missing_close_days():
     """A day with no close for the symbol uses the most recent prior close."""
     orders = _orders(("buy", 10, 100, 1))

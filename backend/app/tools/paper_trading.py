@@ -547,12 +547,17 @@ def reconstruct_equity_series(
             realized += pnl
             i += 1
         # Mark open positions to the latest close on or before this day. Signed
-        # qty makes the same expression correct for shorts.
+        # qty makes the same expression correct for shorts. ``cost_basis``
+        # accumulates what's deployed in still-open positions so the point can
+        # also report the trade-sized ``invested`` value (basis + unrealized)
+        # alongside account equity.
         unrealized = 0.0
-        if closes:
-            for symbol, (qty, avg) in state.items():
-                if abs(qty) < 1e-9:
-                    continue
+        cost_basis = 0.0
+        for symbol, (qty, avg) in state.items():
+            if abs(qty) < 1e-9:
+                continue
+            cost_basis += abs(qty) * avg
+            if closes:
                 close = _close_on_or_before(
                     close_dates.get(symbol, []), closes.get(symbol, {}), day
                 )
@@ -560,7 +565,10 @@ def reconstruct_equity_series(
                     unrealized += qty * (close - avg)
         points.append(
             PortfolioHistoryPoint(
-                date=day.isoformat(), equity=starting_cash + realized + unrealized
+                date=day.isoformat(),
+                equity=starting_cash + realized + unrealized,
+                invested=cost_basis + unrealized,
+                pnl=realized + unrealized,
             )
         )
     return points

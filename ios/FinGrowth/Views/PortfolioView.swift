@@ -614,6 +614,17 @@ private struct PerformanceSection: View {
             case .all: return 365
             }
         }
+
+        // Hero subtitle when not scrubbing ("+$12.34 (+1.2%) Past month").
+        var title: String {
+            switch self {
+            case .w1: return "Past week"
+            case .m1: return "Past month"
+            case .m3: return "Past 3 months"
+            case .ytd: return "Year to date"
+            case .all: return "Past year"
+            }
+        }
     }
 
     // SPY line color from the comp (#6E7A73) — between the t2/t3 text tiers.
@@ -624,7 +635,7 @@ private struct PerformanceSection: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                if let chart = chartData {
+                if let chart = chartData, hasTradeActivity(chart) {
                     performanceHero(chart)
                         .padding(.horizontal, 4)
                     chartCard(chart)
@@ -696,26 +707,49 @@ private struct PerformanceSection: View {
         }
     }
 
+    // Dollar mode with no trades is a dead-flat $0 line that reads as a broken
+    // chart; the guided empty state (with its "place your first paper trade"
+    // CTA) is the honest render for that. The percent fallback keeps the old
+    // behavior, where the SPY overlay gives the window shape even with no
+    // trades.
+    private func hasTradeActivity(_ series: PerformanceSeries) -> Bool {
+        guard series.hasInvestedData else { return true }
+        return series.portfolio.contains {
+            abs($0.invested ?? 0) > 0.005 || abs($0.pnl ?? 0) > 0.005
+        }
+    }
+
     private struct PerformanceSeries {
         var portfolio: [ReturnPoint]
         var benchmark: [ReturnPoint]
+
+        // Dollar mode: available once the backend ships the trade-sized
+        // invested/pnl fields. The hero and chart then show what the user's
+        // trades are worth (and their P/L), not deltas on the $100K seed.
+        var hasInvestedData: Bool {
+            portfolio.contains { $0.invested != nil }
+        }
+
+        // Window baselines for the dollar mode.
+        var baseInvested: Double { portfolio.first?.invested ?? 0 }
+        var basePnl: Double { portfolio.first?.pnl ?? 0 }
     }
 
     private struct ReturnPoint: Hashable {
         var date: Date
         var returnPct: Double
         var equity: Double?
+        var invested: Double?
+        var pnl: Double?
     }
 
     private struct Snapshot {
         var date: Date
         var portfolioReturn: Double
         var benchmarkReturn: Double?
-
-        var spread: Double? {
-            guard let benchmarkReturn else { return nil }
-            return portfolioReturn - benchmarkReturn
-        }
+        var equity: Double?
+        var invested: Double?
+        var pnl: Double?
     }
 
     private struct PositionAllocation: Identifiable {
@@ -731,57 +765,94 @@ private struct PerformanceSection: View {
         var id: String { symbol }
     }
 
-    // Hero block: the cumulative paper return as the screen's one big number,
-    // with the SPY comparison and the beating/trailing spread underneath.
-    // Scrubbing the chart re-points the whole block at the selected day.
+    // Hero block, Robinhood-style: the market value of the user's paper
+    // trades as the one big number (in the primary text color), with the
+    // window's P/L — signed dollars and percent — colored by direction
+    // underneath, then the SPY comparison row. Deliberately trade-sized: $100
+    // of stock that's down $10 reads "$90.00, -$10.00", not a hairline move on
+    // the $100K virtual seed (the seed still caps buying power, it just isn't
+    // displayed as if it were money at work). Scrubbing the chart re-points
+    // the whole block at the selected day. Falls back to the percent-first
+    // layout when the backend doesn't ship the invested/pnl fields.
     @ViewBuilder
     private func performanceHero(_ series: PerformanceSeries) -> some View {
         let snapshot = selectedSnapshot(in: series)
         let portfolioReturn = snapshot?.portfolioReturn ?? latestPortfolioReturn(in: series)
         let benchmarkReturn = snapshot?.benchmarkReturn ?? latestBenchmarkReturn(in: series)
-        let spread = snapshot?.spread ?? latestSpread(in: series)
         VStack(alignment: .leading, spacing: 4) {
-            SectionLabel("Cumulative return · paper")
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(percentLabel(portfolioReturn))
+            if series.hasInvestedData {
+                let invested = snapshot?.invested ?? latestInvested(in: series) ?? 0
+                let pnlDelta = windowPnlDelta(in: series, snapshot: snapshot)
+                SectionLabel("Your trades · paper")
+                Text(formatPrice(invested))
                     .font(.system(size: 40, weight: .heavy))
                     .tracking(-1)
                     .monospacedDigit()
-                    .foregroundStyle(returnColor(portfolioReturn))
-                Text(heroDateLabel(series, snapshot: snapshot))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(FinTheme.textSecondary)
-            }
-            HStack(spacing: 14) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(Self.benchmarkTint)
-                        .frame(width: 8, height: 8)
-                    Text("SPY \(percentLabel(benchmarkReturn))")
+                    .foregroundStyle(FinTheme.textPrimary)
+                    .contentTransition(.numericText())
+                    .animation(.snappy(duration: 0.15), value: invested)
+                HStack(spacing: 8) {
+                    Text(pnlChangeLabel(pnlDelta, invested: invested))
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(returnColor(pnlDelta))
+                    Text(heroDateLabel(series, snapshot: snapshot))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(FinTheme.textSecondary)
                 }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(FinTheme.textSecondary)
-                if let spread {
-                    Text(spreadLabel(spread))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(spread >= 0 ? FinTheme.accent : FinTheme.danger)
+            } else {
+                SectionLabel("Cumulative return · paper")
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(percentLabel(portfolioReturn))
+                        .font(.system(size: 40, weight: .heavy))
+                        .tracking(-1)
+                        .monospacedDigit()
+                        .foregroundStyle(returnColor(portfolioReturn))
+                    Text(heroDateLabel(series, snapshot: snapshot))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(FinTheme.textSecondary)
                 }
             }
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(Self.benchmarkTint)
+                    .frame(width: 8, height: 8)
+                Text("SPY \(percentLabel(benchmarkReturn)) over this window")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(FinTheme.textSecondary)
         }
     }
 
-    // "since Jun 2" against the window start, or the scrubbed day's date.
+    // The window name ("Past month") when at rest, or the scrubbed day's date.
     private func heroDateLabel(_ series: PerformanceSeries, snapshot: Snapshot?) -> String {
         if selectedDate != nil, let snapshot {
             return snapshot.date.formatted(.dateTime.month(.abbreviated).day())
         }
-        guard let first = series.portfolio.first?.date else { return "" }
-        return "since " + first.formatted(.dateTime.month(.abbreviated).day())
+        return range.title
     }
 
-    private func spreadLabel(_ spread: Double) -> String {
-        let points = String(format: "%.2f", abs(spread))
-        return spread >= 0 ? "▲ Beating by \(points) pts" : "▼ Trailing by \(points) pts"
+    private func latestInvested(in series: PerformanceSeries) -> Double? {
+        series.portfolio.last(where: { $0.invested != nil })?.invested
+    }
+
+    // P/L movement from the window's first day to the shown day.
+    private func windowPnlDelta(in series: PerformanceSeries, snapshot: Snapshot?) -> Double {
+        let shown = snapshot?.pnl
+            ?? series.portfolio.last(where: { $0.pnl != nil })?.pnl
+            ?? 0
+        return shown - series.basePnl
+    }
+
+    // "+$12.34 (+1.2%)" — percent relative to the money that was at work
+    // (invested value minus the window's move backs out to roughly the cost
+    // basis). Dollars only when nothing is currently invested, where a percent
+    // has no meaningful base.
+    private func pnlChangeLabel(_ pnlDelta: Double, invested: Double) -> String {
+        let basis = invested - pnlDelta
+        guard invested > 0.005, basis > 0.005 else { return plLabel(pnlDelta) }
+        let pct = pnlDelta / basis * 100
+        return "\(plLabel(pnlDelta)) (\(percentLabel(pct)))"
     }
 
     private func chartCard(_ series: PerformanceSeries) -> some View {
@@ -798,89 +869,104 @@ private struct PerformanceSection: View {
         }
     }
 
+    // Robinhood-style chart: no axes or gridlines, a straight (linear) line
+    // colored by the window's direction — green when up from the window start,
+    // red when down — over a soft matching gradient, with a dashed line at the
+    // window's starting value. In dollar mode the curve is the market value of
+    // the user's trades (so a $100 buy that slips $10 visibly falls 100 → 90);
+    // SPY stays out of that view because percent and dollars don't share an
+    // axis — it remains in the hero row and in the percent fallback chart.
+    // Scrubbing pins a vertical hairline with the day's date above it and
+    // ticks a selection haptic per data point.
     @ViewBuilder
     private func performanceChart(_ series: PerformanceSeries) -> some View {
+        let dollarMode = series.hasInvestedData
+        let snapshot = selectedSnapshot(in: series)
+        let tint = dollarMode
+            ? returnColor(windowPnlDelta(in: series, snapshot: snapshot))
+            : returnColor(snapshot?.portfolioReturn ?? latestPortfolioReturn(in: series))
+        let baseline = dollarMode ? series.baseInvested : 0
         Chart {
             ForEach(series.portfolio, id: \.self) { point in
+                let y = dollarMode ? (point.invested ?? 0) : point.returnPct
                 AreaMark(
                     x: .value("Date", point.date),
-                    yStart: .value("Baseline", 0),
-                    yEnd: .value("Return", point.returnPct)
+                    yStart: .value("Baseline", baseline),
+                    yEnd: .value("Value", y)
                 )
-                // The comp's fill: green fading to transparent under the curve.
                 .foregroundStyle(
                     LinearGradient(
-                        colors: [FinTheme.accent.opacity(0.22), FinTheme.accent.opacity(0)],
+                        colors: [tint.opacity(0.16), tint.opacity(0)],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 )
-                .interpolationMethod(.catmullRom)
 
                 LineMark(
                     x: .value("Date", point.date),
-                    y: .value("Return", point.returnPct),
+                    y: .value("Value", y),
                     series: .value("Series", "Portfolio")
                 )
-                .foregroundStyle(FinTheme.accent)
-                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                .interpolationMethod(.catmullRom)
-            }
-
-            ForEach(series.benchmark, id: \.self) { point in
-                LineMark(
-                    x: .value("Date", point.date),
-                    y: .value("Return", point.returnPct),
-                    series: .value("Series", "SPY")
-                )
-                .foregroundStyle(Self.benchmarkTint)
+                .foregroundStyle(tint)
                 .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
-                .interpolationMethod(.catmullRom)
             }
 
-            RuleMark(y: .value("Break even", 0))
-                .foregroundStyle(.secondary.opacity(0.35))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 5]))
+            if !dollarMode {
+                ForEach(series.benchmark, id: \.self) { point in
+                    LineMark(
+                        x: .value("Date", point.date),
+                        y: .value("Return", point.returnPct),
+                        series: .value("Series", "SPY")
+                    )
+                    .foregroundStyle(Self.benchmarkTint.opacity(0.85))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                }
+            }
 
-            if let snapshot = selectedSnapshot(in: series) {
+            // The window's starting value.
+            RuleMark(y: .value("Start", baseline))
+                .foregroundStyle(FinTheme.textTertiary.opacity(0.5))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 4]))
+
+            if selectedDate != nil, let snapshot {
+                let selectedY = dollarMode
+                    ? (snapshot.invested ?? 0)
+                    : snapshot.portfolioReturn
                 RuleMark(x: .value("Selected date", snapshot.date))
-                    .foregroundStyle(.secondary.opacity(0.35))
+                    .foregroundStyle(FinTheme.textTertiary.opacity(0.7))
                     .lineStyle(StrokeStyle(lineWidth: 1))
+                    .annotation(
+                        position: .top,
+                        overflowResolution: .init(x: .fit(to: .chart), y: .disabled)
+                    ) {
+                        Text(snapshot.date.formatted(.dateTime.month(.abbreviated).day()))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(FinTheme.textSecondary)
+                    }
 
                 PointMark(
                     x: .value("Selected date", snapshot.date),
-                    y: .value("Portfolio return", snapshot.portfolioReturn)
+                    y: .value("Value", selectedY)
                 )
-                .foregroundStyle(FinTheme.accent)
-                .symbolSize(48)
+                .foregroundStyle(tint)
+                .symbolSize(60)
 
-                if let benchmarkReturn = snapshot.benchmarkReturn {
+                if !dollarMode, let benchmarkReturn = snapshot.benchmarkReturn {
                     PointMark(
                         x: .value("Selected date", snapshot.date),
                         y: .value("SPY return", benchmarkReturn)
                     )
                     .foregroundStyle(Self.benchmarkTint)
-                    .symbolSize(42)
+                    .symbolSize(36)
                 }
             }
         }
         .chartXSelection(value: $selectedDate)
-        .chartYAxis {
-            AxisMarks(position: .leading) { value in
-                AxisGridLine()
-                AxisValueLabel {
-                    if let pct = value.as(Double.self) {
-                        Text(percentLabel(pct))
-                    }
-                }
-            }
-        }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) {
-                AxisGridLine()
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-            }
-        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartLegend(.hidden)
+        // One tick per data point while the finger sweeps across days.
+        .sensoryFeedback(.selection, trigger: snapshot?.date)
     }
 
     // 1W/1M/3M/YTD/All chips — the selected window re-fetches the per-user
@@ -912,19 +998,22 @@ private struct PerformanceSection: View {
     }
 
     // Best/worst single day and the thesis hit-rate as a row of small tiles.
+    // In dollar mode the extremes are the biggest daily P/L swings in dollars,
+    // matching the trade-sized hero; the percent fallback keeps return deltas.
     @ViewBuilder
     private func supportTiles(_ series: PerformanceSeries) -> some View {
+        let dollarMode = series.hasInvestedData
         let extremes = bestWorstDay(series)
         let hitRate = ThesisOutcomeEngine.hitRate(ThesisOutcomeEngine.closedTheses(from: paperTrades))
         HStack(spacing: 8) {
             supportTile(
                 "Best day",
-                value: extremes.map { percentLabel($0.best) } ?? "—",
+                value: extremes.map { dollarMode ? plLabel($0.best) : percentLabel($0.best) } ?? "—",
                 color: FinTheme.accent
             )
             supportTile(
                 "Worst day",
-                value: extremes.map { percentLabel($0.worst) } ?? "—",
+                value: extremes.map { dollarMode ? plLabel($0.worst) : percentLabel($0.worst) } ?? "—",
                 color: FinTheme.danger
             )
             supportTile(
@@ -958,13 +1047,19 @@ private struct PerformanceSection: View {
         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 
-    // Day-over-day move extremes along the cumulative curve.
+    // Day-over-day move extremes along the curve — P/L dollars in dollar
+    // mode (buys/sells don't register as moves), return points otherwise.
     private func bestWorstDay(_ series: PerformanceSeries) -> (best: Double, worst: Double)? {
         let points = series.portfolio
         guard points.count >= 2 else { return nil }
+        let dollarMode = series.hasInvestedData
         var deltas: [Double] = []
         for index in 1..<points.count {
-            deltas.append(points[index].returnPct - points[index - 1].returnPct)
+            if dollarMode {
+                deltas.append((points[index].pnl ?? 0) - (points[index - 1].pnl ?? 0))
+            } else {
+                deltas.append(points[index].returnPct - points[index - 1].returnPct)
+            }
         }
         guard let best = deltas.max(), let worst = deltas.min() else { return nil }
         return (best, worst)
@@ -979,9 +1074,9 @@ private struct PerformanceSection: View {
 
     private var emptyHero: some View {
         VStack(alignment: .leading, spacing: 4) {
-            SectionLabel("Cumulative return · paper")
+            SectionLabel("Your trades · paper")
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("0.00%")
+                Text("$0.00")
                     .font(.system(size: 40, weight: .heavy))
                     .tracking(-1)
                     .monospacedDigit()
@@ -1131,7 +1226,9 @@ private struct PerformanceSection: View {
             portfolio.append(ReturnPoint(
                 date: date,
                 returnPct: point.portfolioReturn * 100,
-                equity: point.equity
+                equity: point.equity,
+                invested: point.invested,
+                pnl: point.pnl
             ))
             benchmark.append(ReturnPoint(
                 date: date,
@@ -1204,7 +1301,10 @@ private struct PerformanceSection: View {
         return Snapshot(
             date: portfolioPoint.date,
             portfolioReturn: portfolioPoint.returnPct,
-            benchmarkReturn: benchmarkPoint?.returnPct
+            benchmarkReturn: benchmarkPoint?.returnPct,
+            equity: portfolioPoint.equity,
+            invested: portfolioPoint.invested,
+            pnl: portfolioPoint.pnl
         )
     }
 
@@ -1214,15 +1314,6 @@ private struct PerformanceSection: View {
 
     private func latestBenchmarkReturn(in series: PerformanceSeries) -> Double? {
         series.benchmark.last?.returnPct
-    }
-
-    private func latestSpread(in series: PerformanceSeries) -> Double? {
-        guard let portfolio = latestPortfolioReturn(in: series),
-              let benchmark = latestBenchmarkReturn(in: series)
-        else {
-            return nil
-        }
-        return portfolio - benchmark
     }
 
     private func nearestPoint(to date: Date, in points: [ReturnPoint]) -> ReturnPoint? {
@@ -1382,6 +1473,13 @@ private struct PaperTradeOrderSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
+                }
+                // Tap-to-dismiss can't be attached to a Form (the gesture
+                // steals row buttons' taps — it broke Submit); a Done button
+                // over the keyboard is the reliable Form-safe equivalent.
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { UIApplication.dismissKeyboard() }
                 }
             }
             .onAppear(perform: applyPrefill)
